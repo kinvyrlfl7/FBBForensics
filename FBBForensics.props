@@ -9,6 +9,6 @@
 
   <PropertyGroup>
     <IncludePath>$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtSql;$(IncludePath)</IncludePath>
-    <LibraryPath>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(LibraryPath)</LibraryPath>
+    <LibraryPath>$(TskLibraryDir);$(TskDebugLibraryDir);$(QtInstallDir)\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
 </Project>

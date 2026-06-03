@@ -104,7 +104,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" c
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;zlib.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
