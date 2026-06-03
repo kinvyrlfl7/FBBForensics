@@ -2,7 +2,7 @@
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "ShowcaseQt", "ShowcaseQt.vcxproj", "{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}"
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "FBBForensics", "FBBForensics.vcxproj", "{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

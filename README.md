@@ -1,4 +1,4 @@
-﻿# ShowcaseQt
+﻿# FBBForensics
 
 `Showcase_CLI_v1_clear.py`를 Visual Studio 2022에서 열 수 있는 Qt Widgets 기반 디지털 포렌식 워크벤치로 옮긴 버전입니다.
 
@@ -6,7 +6,7 @@
 
 Visual Studio 2022에서 아래 파일을 열면 됩니다.
 
-- `ShowcaseQt.sln`
+- `FBBForensics.sln`
 
 ## 기본 Qt 경로
 
@@ -16,7 +16,7 @@ Visual Studio 2022에서 아래 파일을 열면 됩니다.
 
 ## libtsk 필수 설정
 
-이 프로젝트는 `libtsk`를 반드시 사용합니다. Visual Studio에서 `ShowcaseQt.props`의 아래 값을 환경에 맞게 채워야 합니다.
+이 프로젝트는 `libtsk`를 반드시 사용합니다. Visual Studio에서 `FBBForensics.props`의 아래 값을 환경에 맞게 채워야 합니다.
 
 - `TskIncludeDir`: `tsk/libtsk.h`를 포함하는 상위 include 경로
 - `TskLibraryDir`: Release용 `libtsk.lib` 경로

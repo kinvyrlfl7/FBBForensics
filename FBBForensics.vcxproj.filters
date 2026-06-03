@@ -55,7 +55,7 @@
     <None Include="README.md">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="ShowcaseQt.props">
+    <None Include="FBBForensics.props">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

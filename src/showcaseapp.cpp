@@ -239,7 +239,7 @@ ShowcaseApp::ShowcaseApp()
     , m_booticeConnectionName(QStringLiteral("showcase-bootice"))
     , m_fbinstConnectionName(QStringLiteral("showcase-fbinst"))
 {
-    setWindowTitle(QStringLiteral("ShowcaseQt Forensics Workbench"));
+    setWindowTitle(QStringLiteral("FBBForensics Workbench"));
     resize(1240, 780);
 
     auto *central = new QWidget(this);
