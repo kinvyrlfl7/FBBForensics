@@ -74,7 +74,7 @@ The `.gitignore` file excludes files that should not be committed:
 
 - Build output: `.vs`, `bin`, `obj`, `out`
 - Analysis output: `partition.db`, `bootice.db`, `fbinsttool.db`, WAL/SHM files
-- Evidence and test images: `*.001`, `*.dd`, `*.E01`, `FileCarving_TestImages`, `Hidden_TestImages`
+- Evidence and test images: `*.001`, `*.dd`
 - Recovered files: `ExtractResult_*`, `fbinsttool_carving`
 - Large binary dependencies and tools: `third-party`, `testdisk-7.2`, `testdisk-*.zip`
 
