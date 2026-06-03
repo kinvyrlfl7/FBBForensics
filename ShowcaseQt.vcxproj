@@ -1,0 +1,160 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}</ProjectGuid>
+    <RootNamespace>ShowcaseQt</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>ShowcaseQt</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="ShowcaseQt.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="ShowcaseQt.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Configuration)\</IntDir>
+    <TargetName>ShowcaseQt</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/Zc:__cplusplus /utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <WarningLevel>Level3</WarningLevel>
+            <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableUAC>true</EnableUAC>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Debug;$(ProjectDir)third-party\bzip2\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Cored.lib;Qt6Guid.lib;Qt6Sqld.lib;Qt6Widgetsd.lib;libtsk.lib;zlibd.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(QtInstallDir)\bin\Qt6Cored.dll" copy /Y "$(QtInstallDir)\bin\Qt6Cored.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Guid.dll" copy /Y "$(QtInstallDir)\bin\Qt6Guid.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Sqld.dll" copy /Y "$(QtInstallDir)\bin\Qt6Sqld.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Widgetsd.dll" copy /Y "$(QtInstallDir)\bin\Qt6Widgetsd.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\plugins\platforms\qwindowsd.dll" (
+  if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
+  copy /Y "$(QtInstallDir)\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
+)
+if exist "$(QtInstallDir)\plugins\sqldrivers\qsqlited.dll" (
+  if not exist "$(OutDir)sqldrivers" mkdir "$(OutDir)sqldrivers"
+  copy /Y "$(QtInstallDir)\plugins\sqldrivers\qsqlited.dll" "$(OutDir)sqldrivers\"
+)
+if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <AdditionalOptions>/Zc:__cplusplus /utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+            <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableUAC>true</EnableUAC>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;zlib.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(QtInstallDir)\bin\Qt6Core.dll" copy /Y "$(QtInstallDir)\bin\Qt6Core.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Gui.dll" copy /Y "$(QtInstallDir)\bin\Qt6Gui.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Sql.dll" copy /Y "$(QtInstallDir)\bin\Qt6Sql.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\bin\Qt6Widgets.dll" copy /Y "$(QtInstallDir)\bin\Qt6Widgets.dll" "$(OutDir)"
+if exist "$(QtInstallDir)\plugins\platforms\qwindows.dll" (
+  if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
+  copy /Y "$(QtInstallDir)\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
+)
+if exist "$(QtInstallDir)\plugins\sqldrivers\qsqlite.dll" (
+  if not exist "$(OutDir)sqldrivers" mkdir "$(OutDir)sqldrivers"
+  copy /Y "$(QtInstallDir)\plugins\sqldrivers\qsqlite.dll" "$(OutDir)sqldrivers\"
+)
+if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\fbinstcarvingworker.cpp" />
+    <ClCompile Include="src\imagereader.cpp" />
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\rawdevice.cpp" />
+    <ClCompile Include="src\signaturecarver.cpp" />
+    <ClCompile Include="src\showcaseanalyzer.cpp" />
+    <ClCompile Include="src\showcaseapp.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\fbinstcarvingworker.h" />
+    <ClInclude Include="src\imagereader.h" />
+    <ClInclude Include="src\rawdevice.h" />
+    <ClInclude Include="src\signaturecarver.h" />
+    <ClInclude Include="src\showcaseanalyzer.h" />
+    <ClInclude Include="src\showcaseapp.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+    <None Include="ShowcaseQt.props" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>
+
+
+
+
+
+
+
+
+
+
+

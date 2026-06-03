@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="UserMacros">
+    <QtInstallDir>C:\Qt\6.10.2\msvc2022_64</QtInstallDir>
+    <TskIncludeDir>$(MSBuildThisFileDirectory)third-party\sleuthkit</TskIncludeDir>
+    <TskLibraryDir>$(MSBuildThisFileDirectory)third-party\sleuthkit\win32\x64\Release_NoLibs</TskLibraryDir>
+    <TskDebugLibraryDir>$(MSBuildThisFileDirectory)third-party\sleuthkit\win32\x64\Debug_NoLibs</TskDebugLibraryDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IncludePath>$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtSql;$(IncludePath)</IncludePath>
+    <LibraryPath>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+</Project>

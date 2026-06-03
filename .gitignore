@@ -1,0 +1,61 @@
+# Visual Studio / MSBuild
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.ipch
+*.pdb
+*.ilk
+*.idb
+*.tlog/
+*.lastbuildstate
+
+# CMake generated files
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Runtime analysis databases and SQLite journals
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+
+# Forensic images, recovered files, and generated carving output
+*.001
+*.dd
+*.e01
+*.E01
+*.raw
+*.img
+*.iso
+*.vhd
+*.vhdx
+ExtractResult*/
+ExtractResult_Fbinst/
+fbinsttool_carving/
+FileCarving_TestImages/
+Hidden_TestImages/
+
+# Bundled binary tool/dependency drops
+third-party/
+testdisk-7.2/
+testdisk-*.zip
+
+# Local test binaries, logs, and scratch objects
+tools/bin/
+tools/*.log
+*.obj
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak

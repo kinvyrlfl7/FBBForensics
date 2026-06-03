@@ -1,0 +1,24 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "ShowcaseQt", "ShowcaseQt.vcxproj", "{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}.Debug|x64.ActiveCfg = Debug|x64
+		{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}.Debug|x64.Build.0 = Debug|x64
+		{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}.Release|x64.ActiveCfg = Release|x64
+		{7F1E3B8B-39A3-4DFB-A2A2-0A54A6B4F8B5}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1A92D1A5-1B8F-45B4-9E97-510B7A713F33}
+	EndGlobalSection
+EndGlobal
