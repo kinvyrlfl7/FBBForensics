@@ -35,6 +35,7 @@
 #include <QSqlRecord>
 #include <QSqlTableModel>
 #include <QTableView>
+#include <QTemporaryFile>
 #include <QTextEdit>
 #include <QThread>
 #include <QTimer>
@@ -55,6 +56,41 @@ constexpr int DbKeyRole = Qt::UserRole + 3;
 constexpr quint64 CarvingChunkSectors = 8192;
 constexpr qint64 CarvingScanWindowBytes = qint64(256) * 1024 * 1024;
 constexpr qint64 CarvingScanOverlapBytes = qint64(16) * 1024 * 1024;
+
+bool materializeSourceToRawFile(const QString &sourcePath, QTemporaryFile &rawFile, QString *errorMessage)
+{
+    std::unique_ptr<ImageReader> reader = ImageReader::create(sourcePath);
+    if (!reader || !reader->open(errorMessage)) {
+        return false;
+    }
+
+    rawFile.setFileTemplate(QDir::tempPath() + QStringLiteral("/FBBForensics_E01_XXXXXX.raw"));
+    rawFile.setAutoRemove(true);
+    if (!rawFile.open()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to create temporary raw image for E01 processing: %1").arg(rawFile.errorString());
+        }
+        return false;
+    }
+
+    constexpr quint64 ChunkSize = 16ULL * 1024ULL * 1024ULL;
+    const quint64 imageSize = reader->size();
+    for (quint64 offset = 0; offset < imageSize; offset += ChunkSize) {
+        const quint64 bytesToRead = qMin<quint64>(ChunkSize, imageSize - offset);
+        const QByteArray chunk = reader->read(offset, bytesToRead, errorMessage);
+        if (quint64(chunk.size()) != bytesToRead) {
+            return false;
+        }
+        if (rawFile.write(chunk) != chunk.size()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Unable to write temporary raw image for E01 processing: %1").arg(rawFile.errorString());
+            }
+            return false;
+        }
+    }
+    rawFile.flush();
+    return true;
+}
 
 struct FbinstCarveRange
 {
@@ -771,7 +807,23 @@ void ShowcaseApp::extractSelectedBooticeFile()
         return;
     }
 
-    TSK_IMG_INFO *image = tsk_img_open_utf8_sing(m_currentSourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
+    QString tskSourcePath = m_currentSourcePath;
+    QTemporaryFile temporaryRaw;
+    if (QFileInfo(m_currentSourcePath).suffix().compare(QStringLiteral("e01"), Qt::CaseInsensitive) == 0) {
+        appendLog(QStringLiteral("Preparing E01 image for Bootice extraction..."));
+        QString prepareError;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool prepared = materializeSourceToRawFile(m_currentSourcePath, temporaryRaw, &prepareError);
+        QApplication::restoreOverrideCursor();
+        if (!prepared) {
+            QMessageBox::critical(this, QStringLiteral("Extraction failed"), prepareError);
+            appendLog(QStringLiteral("Bootice extraction failed for %1: %2").arg(entryName, prepareError));
+            return;
+        }
+        tskSourcePath = temporaryRaw.fileName();
+    }
+
+    TSK_IMG_INFO *image = tsk_img_open_utf8_sing(tskSourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
     if (!image) {
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("libtsk could not reopen the source image."));
         return;
@@ -1491,6 +1543,8 @@ void ShowcaseApp::runAnalysis()
 
     QString statusMessage;
     bool ok = false;
+    bool verificationFailed = false;
+    QString verificationReason;
 
     if (!m_partitionDb->open()) {
         statusMessage = QStringLiteral("Unable to open partition.db: %1").arg(m_partitionDb->lastError().text());
@@ -1505,7 +1559,30 @@ void ShowcaseApp::runAnalysis()
         });
         ok = analyzer.analyze(*m_partitionDb, *m_booticeDb, *m_fbinstDb, &statusMessage);
         if (ok) {
-            statusMessage = QStringLiteral("Acquisition complete. Results stored in partition.db, bootice.db, and fbinsttool.db.");
+            QSqlQuery verificationQuery(*m_partitionDb);
+            verificationQuery.prepare(QStringLiteral(
+                "SELECT Summary_Value FROM AnalysisSummary WHERE Summary_Key=?"));
+            verificationQuery.addBindValue(QStringLiteral("verification_status"));
+            if (verificationQuery.exec() && verificationQuery.next()) {
+                verificationFailed = verificationQuery.value(0).toString().compare(QStringLiteral("Failed"), Qt::CaseInsensitive) == 0;
+            }
+
+            if (verificationFailed) {
+                QSqlQuery reasonQuery(*m_partitionDb);
+                reasonQuery.prepare(QStringLiteral(
+                    "SELECT Summary_Value FROM AnalysisSummary WHERE Summary_Key=?"));
+                reasonQuery.addBindValue(QStringLiteral("verification_failure_reason"));
+                if (reasonQuery.exec() && reasonQuery.next()) {
+                    verificationReason = reasonQuery.value(0).toString();
+                }
+                if (verificationReason.isEmpty()) {
+                    verificationReason = QStringLiteral("Hidden-area signature follow-up structure validation failed.");
+                }
+                statusMessage = QStringLiteral("Verification failed: %1 Results were still stored in partition.db, bootice.db, and fbinsttool.db.")
+                    .arg(verificationReason);
+            } else {
+                statusMessage = QStringLiteral("Acquisition complete. Results stored in partition.db, bootice.db, and fbinsttool.db.");
+            }
             rebuildNavigation();
         }
     }
@@ -1513,15 +1590,22 @@ void ShowcaseApp::runAnalysis()
     QApplication::restoreOverrideCursor();
     m_runButton->setEnabled(true);
     appendLog(statusMessage);
+    if (ok && verificationFailed) {
+        appendLog(QStringLiteral("Verification failed reason: %1").arg(verificationReason));
+    }
     if (ok) {
-        updateProgress(100, QStringLiteral("Analysis complete"));
+        updateProgress(100, verificationFailed ? QStringLiteral("Verification failed") : QStringLiteral("Analysis complete"));
     } else {
         updateProgress(m_progressBar ? m_progressBar->value() : 0, QStringLiteral("Analysis failed"));
     }
-    m_statusLabel->setText(ok ? QStringLiteral("Acquisition completed") : QStringLiteral("Acquisition failed"));
+    m_statusLabel->setText(ok ? (verificationFailed ? QStringLiteral("Verification failed") : QStringLiteral("Acquisition completed")) : QStringLiteral("Acquisition failed"));
 
     if (ok) {
-        QMessageBox::information(this, QStringLiteral("Analysis complete"), statusMessage);
+        if (verificationFailed) {
+            QMessageBox::warning(this, QStringLiteral("Verification failed"), statusMessage);
+        } else {
+            QMessageBox::information(this, QStringLiteral("Analysis complete"), statusMessage);
+        }
     } else {
         QMessageBox::critical(this, QStringLiteral("Analysis failed"), statusMessage);
     }

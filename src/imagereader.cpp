@@ -2,6 +2,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <libewf.h>
 #include <tsk/libtsk.h>
 
 #include <limits>
@@ -44,6 +45,21 @@ quint64 queryPhysicalDriveSize(const QString &path)
         nullptr);
     CloseHandle(handle);
     return ok ? quint64(lengthInfo.Length.QuadPart) : 0;
+}
+
+QString takeLibewfError(libewf_error_t **error)
+{
+    if (!error || !*error) {
+        return {};
+    }
+
+    char message[4096] = {};
+    QString result;
+    if (libewf_error_sprint(*error, message, sizeof(message)) > 0) {
+        result = QString::fromUtf8(message);
+    }
+    libewf_error_free(error);
+    return result;
 }
 
 class RawImageReader final : public ImageReader
@@ -261,13 +277,184 @@ private:
     QString m_sourcePath;
     TSK_IMG_INFO *m_image = nullptr;
 };
+
+class EwfImageReader final : public ImageReader
+{
+public:
+    explicit EwfImageReader(const QString &sourcePath)
+        : m_sourcePath(sourcePath)
+    {
+    }
+
+    ~EwfImageReader() override
+    {
+        close();
+    }
+
+    bool open(QString *errorMessage) override
+    {
+        close();
+
+        libewf_error_t *error = nullptr;
+        const QByteArray utf8Path = m_sourcePath.toUtf8();
+        libewf_set_codepage(0, nullptr);
+        if (libewf_glob(utf8Path.constData(), static_cast<size_t>(utf8Path.size()), LIBEWF_FORMAT_UNKNOWN, &m_filenames, &m_numberOfFilenames, &error) != 1
+            || m_numberOfFilenames <= 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("libewf could not locate E01 segment files for %1. %2")
+                    .arg(m_sourcePath, takeLibewfError(&error));
+            } else {
+                takeLibewfError(&error);
+            }
+            close();
+            return false;
+        }
+
+        if (libewf_handle_initialize(&m_handle, &error) != 1 || !m_handle) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("libewf handle initialization failed for %1. %2")
+                    .arg(m_sourcePath, takeLibewfError(&error));
+            } else {
+                takeLibewfError(&error);
+            }
+            close();
+            return false;
+        }
+
+        if (libewf_handle_open(m_handle, m_filenames, m_numberOfFilenames, libewf_get_access_flags_read(), &error) != 1) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("libewf could not open E01 image %1. %2")
+                    .arg(m_sourcePath, takeLibewfError(&error));
+            } else {
+                takeLibewfError(&error);
+            }
+            close();
+            return false;
+        }
+
+        size64_t mediaSize = 0;
+        if (libewf_handle_get_media_size(m_handle, &mediaSize, &error) != 1) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("libewf could not read logical media size for %1. %2")
+                    .arg(m_sourcePath, takeLibewfError(&error));
+            } else {
+                takeLibewfError(&error);
+            }
+            close();
+            return false;
+        }
+
+        m_mediaSize = static_cast<quint64>(mediaSize);
+        return true;
+    }
+
+    void close() override
+    {
+        if (m_handle) {
+            libewf_error_t *error = nullptr;
+            libewf_handle_close(m_handle, &error);
+            takeLibewfError(&error);
+            libewf_handle_free(&m_handle, &error);
+            takeLibewfError(&error);
+            m_handle = nullptr;
+        }
+
+        if (m_filenames) {
+            libewf_error_t *error = nullptr;
+            libewf_glob_free(m_filenames, m_numberOfFilenames, &error);
+            takeLibewfError(&error);
+            m_filenames = nullptr;
+            m_numberOfFilenames = 0;
+        }
+
+        m_mediaSize = 0;
+    }
+
+    bool isOpen() const override
+    {
+        return m_handle != nullptr;
+    }
+
+    quint64 size() const override
+    {
+        return m_mediaSize;
+    }
+
+    QByteArray read(quint64 offset, quint64 size, QString *errorMessage) override
+    {
+        if (size == 0) {
+            return {};
+        }
+
+        if (!m_handle) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("E01 image reader is not open.");
+            }
+            return {};
+        }
+
+        if (offset > m_mediaSize || size > m_mediaSize - offset) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("E01 read range is outside logical media: offset %1, size %2, media %3.")
+                    .arg(offset)
+                    .arg(size)
+                    .arg(m_mediaSize);
+            }
+            return {};
+        }
+
+        if (size > quint64(std::numeric_limits<qsizetype>::max())) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("E01 read request is too large for a single buffer: %1 bytes.").arg(size);
+            }
+            return {};
+        }
+
+        QByteArray data(static_cast<qsizetype>(size), Qt::Uninitialized);
+        libewf_error_t *error = nullptr;
+        const ssize_t bytesRead = libewf_handle_read_random(
+            m_handle,
+            data.data(),
+            static_cast<size_t>(size),
+            static_cast<off64_t>(offset),
+            &error);
+
+        if (bytesRead < 0 || quint64(bytesRead) != size) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("libewf read failed at offset %1 for %2. Requested %3 bytes, read %4 bytes. %5")
+                    .arg(offset)
+                    .arg(m_sourcePath)
+                    .arg(size)
+                    .arg(bytesRead)
+                    .arg(takeLibewfError(&error));
+            } else {
+                takeLibewfError(&error);
+            }
+            return {};
+        }
+
+        return data;
+    }
+
+    QString backendName() const override
+    {
+        return QStringLiteral("libewf image reader");
+    }
+
+private:
+    QString m_sourcePath;
+    libewf_handle_t *m_handle = nullptr;
+    char **m_filenames = nullptr;
+    int m_numberOfFilenames = 0;
+    quint64 m_mediaSize = 0;
+};
 }
 
 std::unique_ptr<ImageReader> ImageReader::create(const QString &sourcePath)
 {
     const QString suffix = QFileInfo(sourcePath).suffix().toLower();
     if (suffix == QStringLiteral("e01")) {
-        return std::make_unique<TskImageReader>(sourcePath);
+        return std::make_unique<EwfImageReader>(sourcePath);
     }
     return std::make_unique<RawImageReader>(sourcePath);
 }

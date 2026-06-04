@@ -51,6 +51,8 @@ private:
     bool analyzeFbinstFileList(ImageReader &reader, quint16 fbinstVersion, const FbinstHeader &header, QSqlDatabase &fbinstDb, QString *errorMessage);
 
     bool enumeratePartitions(QSqlDatabase &partitionDb, QString *errorMessage);
+    bool enumerateMbrPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage);
+    bool enumerateGptPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage);
     bool enumerateBooticeRoot(quint64 startLba, QSqlDatabase &booticeDb, QString *errorMessage);
 
     void recordPrimaryAreaSectors(quint32 start, quint32 fileSize);

@@ -58,15 +58,15 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\include;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableUAC>true</EnableUAC>
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Debug;$(ProjectDir)third-party\bzip2\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Cored.lib;Qt6Guid.lib;Qt6Sqld.lib;Qt6Widgetsd.lib;libtsk.lib;zlibd.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Debug;$(ProjectDir)third-party\bzip2\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Cored.lib;Qt6Guid.lib;Qt6Sqld.lib;Qt6Widgetsd.lib;libtsk.lib;libewf.lib;zlibd.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(QtInstallDir)\bin\Qt6Cored.dll" copy /Y "$(QtInstallDir)\bin\Qt6Cored.dll" "$(OutDir)"
@@ -81,7 +81,9 @@ if exist "$(QtInstallDir)\plugins\sqldrivers\qsqlited.dll" (
   if not exist "$(OutDir)sqldrivers" mkdir "$(OutDir)sqldrivers"
   copy /Y "$(QtInstallDir)\plugins\sqldrivers\qsqlited.dll" "$(OutDir)sqldrivers\"
 )
-if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" "$(OutDir)"</Command>
+if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" "$(OutDir)"
+if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\libewf.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\libewf.dll" "$(OutDir)"
+if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\zlib.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\zlib.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -95,7 +97,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" c
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(TskIncludeDir);$(QtInstallDir)\include;$(QtInstallDir)\include\QtCore;$(QtInstallDir)\include\QtGui;$(QtInstallDir)\include\QtSql;$(QtInstallDir)\include\QtWidgets;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\include;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\include;$(ProjectDir)third-party\bzip2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -104,8 +106,8 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs\zlibd.dll" c
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;zlib.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;libewf.lib;zlib.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(QtInstallDir)\bin\Qt6Core.dll" copy /Y "$(QtInstallDir)\bin\Qt6Core.dll" "$(OutDir)"
@@ -120,7 +122,9 @@ if exist "$(QtInstallDir)\plugins\sqldrivers\qsqlite.dll" (
   if not exist "$(OutDir)sqldrivers" mkdir "$(OutDir)sqldrivers"
   copy /Y "$(QtInstallDir)\plugins\sqldrivers\qsqlite.dll" "$(OutDir)sqldrivers\"
 )
-if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" "$(OutDir)"</Command>
+if exist "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\x64\Release_NoLibs\zlib.dll" "$(OutDir)"
+if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\libewf.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\libewf.dll" "$(OutDir)"
+if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\zlib.dll" copy /Y "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release\zlib.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

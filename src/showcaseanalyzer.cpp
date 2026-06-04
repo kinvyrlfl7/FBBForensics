@@ -1,10 +1,12 @@
 ﻿#include "showcaseanalyzer.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QMap>
 #include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QTemporaryFile>
 #include <QVariantList>
 #include <tsk/libtsk.h>
 
@@ -67,6 +69,60 @@ QString formatPartitionSize(quint64 bytes)
         .arg(double(bytes) / BytesPerMb, 0, 'f', 2)
         .arg(double(bytes) / BytesPerGb, 0, 'f', 2);
 }
+
+bool isZeroGuid(const QByteArray &data, int offset)
+{
+    for (int index = 0; index < 16; ++index) {
+        if (static_cast<uchar>(data[offset + index]) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString readGptName(const QByteArray &entry)
+{
+    QString name;
+    for (int offset = 56; offset + 1 < entry.size(); offset += 2) {
+        const ushort codeUnit = ushort(static_cast<uchar>(entry[offset]))
+            | (ushort(static_cast<uchar>(entry[offset + 1])) << 8);
+        if (codeUnit == 0) {
+            break;
+        }
+        name.append(QChar(codeUnit));
+    }
+    return name.trimmed();
+}
+
+bool materializeReaderToRawFile(ImageReader &reader, QTemporaryFile &rawFile, QString *errorMessage)
+{
+    rawFile.setFileTemplate(QDir::tempPath() + QStringLiteral("/FBBForensics_E01_XXXXXX.raw"));
+    rawFile.setAutoRemove(true);
+    if (!rawFile.open()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Unable to create temporary raw image for E01 processing: %1").arg(rawFile.errorString());
+        }
+        return false;
+    }
+
+    constexpr quint64 ChunkSize = 16ULL * 1024ULL * 1024ULL;
+    const quint64 imageSize = reader.size();
+    for (quint64 offset = 0; offset < imageSize; offset += ChunkSize) {
+        const quint64 bytesToRead = qMin<quint64>(ChunkSize, imageSize - offset);
+        const QByteArray chunk = reader.read(offset, bytesToRead, errorMessage);
+        if (quint64(chunk.size()) != bytesToRead) {
+            return false;
+        }
+        if (rawFile.write(chunk) != chunk.size()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Unable to write temporary raw image for E01 processing: %1").arg(rawFile.errorString());
+            }
+            return false;
+        }
+    }
+    rawFile.flush();
+    return true;
+}
 }
 
 ShowcaseAnalyzer::ShowcaseAnalyzer(const QString &sourcePath)
@@ -120,7 +176,7 @@ bool ShowcaseAnalyzer::analyze(QSqlDatabase &partitionDb, QSqlDatabase &booticeD
         return false;
     }
 
-    reportProgress(45, QStringLiteral("Enumerating partitions with libtsk..."));
+    reportProgress(45, QStringLiteral("Enumerating partitions..."));
     if (!enumeratePartitions(partitionDb, errorMessage)) {
         return false;
     }
@@ -396,29 +452,59 @@ bool ShowcaseAnalyzer::readMbr(QSqlDatabase &partitionDb, QSqlDatabase &booticeD
         return false;
     }
 
-    const QString bootSignature = QStringLiteral("0x%1").arg(readLe16(mbr, 510), 4, 16, QLatin1Char('0'));
+    const quint16 mbrBootSignature = readLe16(mbr, 510);
+    const QString bootSignature = QStringLiteral("0x%1").arg(mbrBootSignature, 4, 16, QLatin1Char('0'));
     if (!recordSummary(partitionDb, QStringLiteral("mbr_signature"), bootSignature, errorMessage)) {
         return false;
     }
 
+    auto rejectCandidate = [&](const QString &candidate, const QString &reason) -> bool {
+        reportProgress(90, QStringLiteral("Recording suspicious hidden-area signature finding..."));
+        return recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Suspicious %1 Signature").arg(candidate), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("hidden_boot_validation"), QStringLiteral("Rejected: %1").arg(reason), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("verification_status"), QStringLiteral("Failed"), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("verification_failure_reason"), reason, errorMessage);
+    };
+
     if (mbr.mid(71, 4) == QByteArrayLiteral("-ELM")) {
-        if (!recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("UltraISO/Bootice"), errorMessage)) {
+        if (!recordSummary(partitionDb, QStringLiteral("candidate_signature"), QStringLiteral("Bootice/EasyBoot -ELM at sector 0 offset 71"), errorMessage)) {
             return false;
         }
+        if (mbrBootSignature != 0xAA55) {
+            return rejectCandidate(QStringLiteral("Bootice/EasyBoot"), QStringLiteral("MBR boot signature is %1, expected 0xaa55").arg(bootSignature));
+        }
+
         reportProgress(75, QStringLiteral("Parsing Bootice or EasyBoot structures..."));
-        return analyzeUltraIso(partitionDb, booticeDb, errorMessage);
+        QString validationError;
+        if (!analyzeUltraIso(partitionDb, booticeDb, &validationError)) {
+            return rejectCandidate(QStringLiteral("Bootice/EasyBoot"), validationError.isEmpty() ? QStringLiteral("Bootice follow-up structure validation failed") : validationError);
+        }
+        return recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Confirmed Bootice/EasyBoot"), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("hidden_boot_validation"), QStringLiteral("Confirmed: sector 96/99 metadata and Bootice filesystem validated"), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("verification_status"), QStringLiteral("Passed"), errorMessage);
     }
 
     if (mbr.mid(436, 4) == QByteArrayLiteral("FBBF")) {
-        if (!recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Fbinst"), errorMessage)) {
+        if (!recordSummary(partitionDb, QStringLiteral("candidate_signature"), QStringLiteral("Fbinst FBBF at sector 0 offset 436"), errorMessage)) {
             return false;
         }
+        if (mbrBootSignature != 0xAA55) {
+            return rejectCandidate(QStringLiteral("Fbinst"), QStringLiteral("MBR boot signature is %1, expected 0xaa55").arg(bootSignature));
+        }
+
         reportProgress(75, QStringLiteral("Parsing Fbinst structures..."));
-        return analyzeFbinst(partitionDb, fbinstDb, errorMessage);
+        QString validationError;
+        if (!analyzeFbinst(partitionDb, fbinstDb, &validationError)) {
+            return rejectCandidate(QStringLiteral("Fbinst"), validationError.isEmpty() ? QStringLiteral("Fbinst follow-up structure validation failed") : validationError);
+        }
+        return recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Confirmed Fbinst"), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("hidden_boot_validation"), QStringLiteral("Confirmed: SubMBR, file-list metadata, and sector layout validated"), errorMessage)
+            && recordSummary(partitionDb, QStringLiteral("verification_status"), QStringLiteral("Passed"), errorMessage);
     }
 
     reportProgress(90, QStringLiteral("Recording standard MBR findings..."));
-    return recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Standard MBR"), errorMessage);
+    return recordSummary(partitionDb, QStringLiteral("hidden_boot_type"), QStringLiteral("Standard MBR"), errorMessage)
+        && recordSummary(partitionDb, QStringLiteral("verification_status"), QStringLiteral("Not applicable"), errorMessage);
 }
 
 bool ShowcaseAnalyzer::analyzeUltraIso(QSqlDatabase &partitionDb, QSqlDatabase &booticeDb, QString *errorMessage)
@@ -441,6 +527,22 @@ bool ShowcaseAnalyzer::analyzeUltraIso(QSqlDatabase &partitionDb, QSqlDatabase &
     const quint32 startLba = readLe32(booticeSector, 502);
     const quint32 sectorCount = readLe32(booticeSector, 506);
     const quint64 size = quint64(sectorCount) * SectorSize;
+    const quint64 imageSectors = m_reader->size() / SectorSize;
+    if (partitionType == 0 || startLba == 0 || sectorCount == 0) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice sector 96 partition metadata is empty or invalid.");
+        }
+        return false;
+    }
+    if (imageSectors > 0 && (quint64(startLba) >= imageSectors || quint64(startLba) + quint64(sectorCount) > imageSectors)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice partition range is outside the evidence image: start LBA %1, sectors %2, image sectors %3.")
+                .arg(startLba)
+                .arg(sectorCount)
+                .arg(imageSectors);
+        }
+        return false;
+    }
 
     QSqlQuery insert(booticeDb);
     insert.prepare(QStringLiteral("INSERT INTO Bootice(Type, Start_LBA_Address, Total_Sector_Count, Partition_Size) VALUES(?, ?, ?, ?)"));
@@ -460,6 +562,12 @@ bool ShowcaseAnalyzer::analyzeUltraIso(QSqlDatabase &partitionDb, QSqlDatabase &
 
     const QString booticeSignature = formatSignatureBytes(easyBootSector.mid(71, 4));
     const QString easyBootSignature = formatSignatureBytes(easyBootSector.mid(480, 4));
+    if (easyBootSector.mid(71, 4) != QByteArrayLiteral("-ELM") && easyBootSector.mid(480, 4) != QByteArrayLiteral("-ELC")) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice sector 99 does not contain expected -ELM or -ELC follow-up signature.");
+        }
+        return false;
+    }
     const bool easyBootPresent = easyBootSector.mid(480, 4) == QByteArrayLiteral("-ELC");
     const QString classification = easyBootPresent ? QStringLiteral("EasyBoot(Deep_Hidden)") : QStringLiteral("Bootice(Deep_Hidden)");
 
@@ -654,6 +762,45 @@ bool ShowcaseAnalyzer::analyzeFbinst(QSqlDatabase &partitionDb, QSqlDatabase &fb
     const FbinstHeader header{readLe16(subMbr, 6), readLe16(subMbr, 8)};
     const quint16 primarySize = readLe16(subMbr, 10);
     const quint32 extendedSize = readLe32(subMbr, 12);
+    const quint8 versionMajor = static_cast<quint8>(fbinstVersion & 0x00FF);
+    const quint8 versionMinor = static_cast<quint8>((fbinstVersion >> 8) & 0x00FF);
+    const quint64 imageSectors = m_reader->size() / SectorSize;
+    const quint64 primaryDataStart = 68ULL + quint64(header.listSize);
+    const quint64 totalFbinstSectors = quint64(primarySize) + quint64(extendedSize);
+
+    if (versionMajor == 0 || versionMajor > 9 || versionMinor > 99) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Fbinst SubMBR version field is outside supported bounds: raw=0x%1, formatted=%2.")
+                .arg(fbinstVersion, 4, 16, QLatin1Char('0'))
+                .arg(version);
+        }
+        return false;
+    }
+    if (header.listSize == 0 || header.listUsed > header.listSize) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Fbinst file-list metadata is invalid: List_Used=%1, List_Size=%2.")
+                .arg(header.listUsed)
+                .arg(header.listSize);
+        }
+        return false;
+    }
+    if (primarySize == 0 || primarySize < primaryDataStart) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Fbinst Primary area is too small for the declared file-list layout: Primary_Size=%1, required data start sector=%2.")
+                .arg(primarySize)
+                .arg(primaryDataStart);
+        }
+        return false;
+    }
+    if (totalFbinstSectors == 0 || (imageSectors > 0 && totalFbinstSectors > imageSectors)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Fbinst declared area exceeds the evidence image: Primary_Size=%1, Extended_Size=%2, image sectors=%3.")
+                .arg(primarySize)
+                .arg(extendedSize)
+                .arg(imageSectors);
+        }
+        return false;
+    }
 
     QSqlQuery insert(fbinstDb);
     insert.prepare(QStringLiteral("INSERT INTO Fbinst(Fbinst_Version, List_Used, List_Size, Primary_Size, Extended_Size) VALUES(?, ?, ?, ?, ?)"));
@@ -717,6 +864,20 @@ bool ShowcaseAnalyzer::analyzeFbinstFileList(ImageReader &reader, quint16 fbinst
         const quint32 fileStart = readLe32(fileList, offset + 2);
         const quint32 fileSize = readLe32(fileList, offset + 6);
         const quint64 modifiedTime = has64BitModifiedTime ? readLe64(fileList, offset + 10) : readLe32(fileList, offset + 10);
+        if (areaType != 0 && areaType != 1) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Corrupted Fbinst file list: invalid data area type %1 at offset %2.")
+                    .arg(areaType)
+                    .arg(offset);
+            }
+            return false;
+        }
+        if (fileSize == 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Corrupted Fbinst file list: zero-sized file entry at offset %1.").arg(offset);
+            }
+            return false;
+        }
         offset += entryHeaderSize;
 
         QByteArray nameBytes;
@@ -726,6 +887,12 @@ bool ShowcaseAnalyzer::analyzeFbinstFileList(ImageReader &reader, quint16 fbinst
         }
         if (offset < fileList.size()) {
             ++offset;
+        }
+        if (nameBytes.isEmpty()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Corrupted Fbinst file list: empty file name.");
+            }
+            return false;
         }
 
         QSqlQuery insert(fbinstDb);
@@ -751,21 +918,19 @@ bool ShowcaseAnalyzer::analyzeFbinstFileList(ImageReader &reader, quint16 fbinst
 
 bool ShowcaseAnalyzer::enumeratePartitions(QSqlDatabase &partitionDb, QString *errorMessage)
 {
+    if (QFileInfo(m_sourcePath).suffix().compare(QStringLiteral("e01"), Qt::CaseInsensitive) == 0) {
+        return enumerateMbrPartitionsFromReader(partitionDb, errorMessage);
+    }
+
     TSK_IMG_INFO *image = tsk_img_open_utf8_sing(m_sourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
     if (!image) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("libtsk could not open the image or physical device.");
-        }
-        return false;
+        return enumerateMbrPartitionsFromReader(partitionDb, errorMessage);
     }
 
     TSK_VS_INFO *volumeSystem = tsk_vs_open(image, 0, TSK_VS_TYPE_DETECT);
     if (!volumeSystem) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("libtsk could not open the volume system.");
-        }
         tsk_img_close(image);
-        return false;
+        return enumerateMbrPartitionsFromReader(partitionDb, errorMessage);
     }
 
     quint64 totalBytes = 0;
@@ -796,9 +961,162 @@ bool ShowcaseAnalyzer::enumeratePartitions(QSqlDatabase &partitionDb, QString *e
     return recordSummary(partitionDb, QStringLiteral("total_partition_bytes"), QString::number(totalBytes), errorMessage);
 }
 
+bool ShowcaseAnalyzer::enumerateMbrPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage)
+{
+    if (!m_reader || !m_reader->isOpen()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Image reader is not open.");
+        }
+        return false;
+    }
+
+    const QByteArray mbr = readBytes(*m_reader, 0, SectorSize, errorMessage);
+    if (mbr.size() != SectorSize) {
+        return false;
+    }
+
+    for (int slot = 0; slot < 4; ++slot) {
+        const int offset = 446 + slot * 16;
+        const quint8 partitionType = static_cast<quint8>(mbr[offset + 4]);
+        if (partitionType == 0xee) {
+            return enumerateGptPartitionsFromReader(partitionDb, errorMessage);
+        }
+    }
+
+    quint64 totalBytes = 0;
+    for (int slot = 0; slot < 4; ++slot) {
+        const int offset = 446 + slot * 16;
+        const quint8 partitionType = static_cast<quint8>(mbr[offset + 4]);
+        const quint32 startLba = readLe32(mbr, offset + 8);
+        const quint32 sectorCount = readLe32(mbr, offset + 12);
+        if (partitionType == 0 && startLba == 0 && sectorCount == 0) {
+            continue;
+        }
+
+        const quint64 partitionSize = quint64(sectorCount) * SectorSize;
+        const quint64 readableBytes = m_reader ? m_reader->size() : 0;
+        const quint64 partitionStartBytes = quint64(startLba) * SectorSize;
+        const quint64 boundedSize = readableBytes > partitionStartBytes
+            ? qMin(partitionSize, readableBytes - partitionStartBytes)
+            : partitionSize;
+        totalBytes += boundedSize;
+
+        QSqlQuery insert(partitionDb);
+        insert.prepare(QStringLiteral("INSERT INTO Partitions(Number, Type, Start_LBA_Address, Total_Sector_Count, Partition_Size, Partition_Size_MB_GB) VALUES(?, ?, ?, ?, ?, ?)"));
+        insert.addBindValue(slot + 1);
+        insert.addBindValue(partitionTypeToString(partitionType));
+        insert.addBindValue(quint64(startLba));
+        insert.addBindValue(quint64(sectorCount));
+        insert.addBindValue(partitionSize);
+        insert.addBindValue(formatPartitionSize(partitionSize));
+        if (!execQuery(insert, errorMessage)) {
+            return false;
+        }
+    }
+
+    return recordSummary(partitionDb, QStringLiteral("total_partition_bytes"), QString::number(totalBytes), errorMessage)
+        && recordSummary(partitionDb, QStringLiteral("partition_enumerator"), QStringLiteral("MBR parser via ImageReader"), errorMessage);
+}
+
+bool ShowcaseAnalyzer::enumerateGptPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage)
+{
+    if (!m_reader || !m_reader->isOpen()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Image reader is not open.");
+        }
+        return false;
+    }
+
+    const QByteArray header = readBytes(*m_reader, SectorSize, SectorSize, errorMessage);
+    if (header.size() != SectorSize) {
+        return false;
+    }
+    if (header.left(8) != QByteArrayLiteral("EFI PART")) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Protective MBR was found, but GPT header signature is missing.");
+        }
+        return false;
+    }
+
+    const quint64 entriesStartLba = readLe64(header, 72);
+    const quint32 numberOfEntries = readLe32(header, 80);
+    const quint32 entrySize = readLe32(header, 84);
+    if (entriesStartLba == 0 || numberOfEntries == 0 || entrySize < 128 || entrySize > 4096 || numberOfEntries > 16384) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("GPT partition entry metadata is outside supported bounds.");
+        }
+        return false;
+    }
+
+    const quint64 entriesSize = quint64(numberOfEntries) * entrySize;
+    if (entriesSize > 64ULL * 1024ULL * 1024ULL) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("GPT partition entry array is too large to read safely.");
+        }
+        return false;
+    }
+
+    const QByteArray entries = readBytes(*m_reader, entriesStartLba * SectorSize, entriesSize, errorMessage);
+    if (quint64(entries.size()) != entriesSize) {
+        return false;
+    }
+
+    quint64 totalBytes = 0;
+    int visibleIndex = 1;
+    for (quint32 index = 0; index < numberOfEntries; ++index) {
+        const int offset = static_cast<int>(quint64(index) * entrySize);
+        if (offset + int(entrySize) > entries.size() || isZeroGuid(entries, offset)) {
+            continue;
+        }
+
+        const QByteArray entry = entries.mid(offset, static_cast<int>(entrySize));
+        const quint64 firstLba = readLe64(entry, 32);
+        const quint64 lastLba = readLe64(entry, 40);
+        if (lastLba < firstLba) {
+            continue;
+        }
+
+        const quint64 sectorCount = lastLba - firstLba + 1;
+        const quint64 partitionSize = sectorCount * SectorSize;
+        totalBytes += partitionSize;
+
+        const QString name = readGptName(entry);
+        QSqlQuery insert(partitionDb);
+        insert.prepare(QStringLiteral("INSERT INTO Partitions(Number, Type, Start_LBA_Address, Total_Sector_Count, Partition_Size, Partition_Size_MB_GB) VALUES(?, ?, ?, ?, ?, ?)"));
+        insert.addBindValue(visibleIndex++);
+        insert.addBindValue(name.isEmpty() ? QStringLiteral("GPT Partition") : QStringLiteral("GPT: %1").arg(name));
+        insert.addBindValue(firstLba);
+        insert.addBindValue(sectorCount);
+        insert.addBindValue(partitionSize);
+        insert.addBindValue(formatPartitionSize(partitionSize));
+        if (!execQuery(insert, errorMessage)) {
+            return false;
+        }
+    }
+
+    return recordSummary(partitionDb, QStringLiteral("total_partition_bytes"), QString::number(totalBytes), errorMessage)
+        && recordSummary(partitionDb, QStringLiteral("partition_enumerator"), QStringLiteral("GPT parser via ImageReader"), errorMessage);
+}
+
 bool ShowcaseAnalyzer::enumerateBooticeRoot(quint64 startLba, QSqlDatabase &booticeDb, QString *errorMessage)
 {
-    TSK_IMG_INFO *image = tsk_img_open_utf8_sing(m_sourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
+    QString tskSourcePath = m_sourcePath;
+    QTemporaryFile temporaryRaw;
+    if (QFileInfo(m_sourcePath).suffix().compare(QStringLiteral("e01"), Qt::CaseInsensitive) == 0) {
+        if (!m_reader || !m_reader->isOpen()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Image reader is not open.");
+            }
+            return false;
+        }
+        reportProgress(78, QStringLiteral("Preparing E01 image for Bootice filesystem listing..."));
+        if (!materializeReaderToRawFile(*m_reader, temporaryRaw, errorMessage)) {
+            return false;
+        }
+        tskSourcePath = temporaryRaw.fileName();
+    }
+
+    TSK_IMG_INFO *image = tsk_img_open_utf8_sing(tskSourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
     if (!image) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("libtsk could not open the Bootice image.");
