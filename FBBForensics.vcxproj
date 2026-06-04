@@ -128,6 +128,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.201
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\booticecarvingworker.cpp" />
     <ClCompile Include="src\fbinstcarvingworker.cpp" />
     <ClCompile Include="src\imagereader.cpp" />
     <ClCompile Include="src\main.cpp" />
@@ -137,6 +138,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.201
     <ClCompile Include="src\showcaseapp.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\booticecarvingworker.h" />
     <ClInclude Include="src\fbinstcarvingworker.h" />
     <ClInclude Include="src\imagereader.h" />
     <ClInclude Include="src\rawdevice.h" />

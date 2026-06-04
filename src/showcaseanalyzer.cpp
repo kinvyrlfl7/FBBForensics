@@ -11,6 +11,7 @@
 #include <tsk/libtsk.h>
 
 #include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -123,6 +124,92 @@ bool materializeReaderToRawFile(ImageReader &reader, QTemporaryFile &rawFile, QS
     rawFile.flush();
     return true;
 }
+
+bool isPowerOfTwo(quint32 value)
+{
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+quint32 fat32Entry(const QByteArray &fat, quint32 cluster)
+{
+    const quint64 offset = quint64(cluster) * 4ULL;
+    if (offset + 4ULL > quint64(fat.size())) {
+        return 0x0FFFFFF8U;
+    }
+    const uchar *base = reinterpret_cast<const uchar *>(fat.constData() + qsizetype(offset));
+    return (quint32(base[0])
+        | (quint32(base[1]) << 8)
+        | (quint32(base[2]) << 16)
+        | (quint32(base[3]) << 24)) & 0x0FFFFFFFU;
+}
+
+bool isFat32EndOfChain(quint32 entry)
+{
+    return entry >= 0x0FFFFFF8U;
+}
+
+bool isFat32FreeCluster(const QByteArray &fat, quint32 cluster)
+{
+    return fat32Entry(fat, cluster) == 0;
+}
+
+QString decodeFatShortName(const QByteArray &entry, bool deleted)
+{
+    if (entry.size() < 11) {
+        return {};
+    }
+
+    QByteArray base = entry.left(8);
+    QByteArray ext = entry.mid(8, 3);
+    if (deleted && !base.isEmpty()) {
+        base[0] = '?';
+    }
+    base = base.trimmed();
+    ext = ext.trimmed();
+    if (base.isEmpty()) {
+        return {};
+    }
+    QString name = QString::fromLatin1(base);
+    if (!ext.isEmpty()) {
+        name += QLatin1Char('.');
+        name += QString::fromLatin1(ext);
+    }
+    return name;
+}
+
+QString fatAttributesToString(quint8 attributes)
+{
+    QStringList values;
+    if (attributes & 0x01) values << QStringLiteral("READONLY");
+    if (attributes & 0x02) values << QStringLiteral("HIDDEN");
+    if (attributes & 0x04) values << QStringLiteral("SYSTEM");
+    if (attributes & 0x08) values << QStringLiteral("VOLUME");
+    if (attributes & 0x10) values << QStringLiteral("DIR");
+    if (attributes & 0x20) values << QStringLiteral("ARCHIVE");
+    return values.isEmpty() ? QStringLiteral("NONE") : values.join(QLatin1Char('|'));
+}
+
+bool looksLikeDirectoryEntry(const QByteArray &entry)
+{
+    if (entry.size() < 32) {
+        return false;
+    }
+    const quint8 first = static_cast<quint8>(entry[0]);
+    const quint8 attributes = static_cast<quint8>(entry[11]);
+    if (first == 0x00 || first == 0x05 || first == 0x2E || attributes == 0x0F || (attributes & 0x08)) {
+        return false;
+    }
+    if ((attributes & 0x3F) == 0 || (attributes & 0xC0)) {
+        return false;
+    }
+    for (int index = 1; index < 11; ++index) {
+        const quint8 value = static_cast<quint8>(entry[index]);
+        if (value < 0x20 && value != 0x05) {
+            return false;
+        }
+    }
+    return true;
+}
 }
 
 ShowcaseAnalyzer::ShowcaseAnalyzer(const QString &sourcePath)
@@ -208,7 +295,13 @@ bool ShowcaseAnalyzer::resetBooticeSchema(QSqlDatabase &database, QString *error
     const QStringList drops{
         QStringLiteral("DROP TABLE IF EXISTS Bootice"),
         QStringLiteral("DROP TABLE IF EXISTS Bootice_List"),
-        QStringLiteral("DROP TABLE IF EXISTS Bootice_Signatures")
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Signatures"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Fat32_Info"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Deleted_Files"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Remaining_Clusters"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Coverage"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Carving_Candidates"),
+        QStringLiteral("DROP TABLE IF EXISTS Bootice_Carved_Files")
     };
     for (const QString &sql : drops) {
         if (!execSql(database, sql, errorMessage)) {
@@ -280,7 +373,86 @@ bool ShowcaseAnalyzer::createBooticeTables(QSqlDatabase &database, QString *erro
             "CREATE TABLE IF NOT EXISTS Bootice_Signatures ("
             "Bootice_Signature TEXT,"
             "EasyBoot_Signature TEXT,"
-            "Classification TEXT)")
+            "Classification TEXT)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Fat32_Info ("
+            "Volume_Start_LBA INTEGER,"
+            "Volume_Sector_Count INTEGER,"
+            "Bytes_Per_Sector INTEGER,"
+            "Sectors_Per_Cluster INTEGER,"
+            "Reserved_Sectors INTEGER,"
+            "FAT_Count INTEGER,"
+            "FAT_Size_Sectors INTEGER,"
+            "Root_Cluster INTEGER,"
+            "FAT_Start_LBA INTEGER,"
+            "Data_Start_LBA INTEGER,"
+            "Cluster_Count INTEGER)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Deleted_Files ("
+            "Directory_Cluster INTEGER,"
+            "Entry_Offset INTEGER,"
+            "Name_83 TEXT,"
+            "Attributes TEXT,"
+            "Start_Cluster INTEGER,"
+            "File_Size INTEGER,"
+            "Recovery_Method TEXT,"
+            "Validation_Status TEXT,"
+            "Notes TEXT)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Remaining_Clusters ("
+            "Start_Cluster INTEGER,"
+            "End_Cluster INTEGER,"
+            "Start_LBA INTEGER,"
+            "End_LBA INTEGER,"
+            "Cluster_Count INTEGER,"
+            "Byte_Count INTEGER)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Coverage ("
+            "Coverage_Type TEXT,"
+            "Start_Cluster INTEGER,"
+            "End_Cluster INTEGER,"
+            "Cluster_Count INTEGER,"
+            "Notes TEXT)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Carving_Candidates ("
+            "Id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Source_Start_Cluster INTEGER,"
+            "Source_End_Cluster INTEGER,"
+            "Source_Start_LBA INTEGER,"
+            "Source_End_LBA INTEGER,"
+            "Logical_Image_Path TEXT,"
+            "Logical_Offset INTEGER,"
+            "Signature_Family TEXT,"
+            "Signature_Hex TEXT,"
+            "Expected_Extension TEXT,"
+            "Expected_Type TEXT,"
+            "Candidate_Status TEXT,"
+            "Parser_Result TEXT,"
+            "Carved_File_Id INTEGER,"
+            "Attempted_Methods TEXT,"
+            "Selected_Method TEXT,"
+            "Reject_Reason TEXT,"
+            "Notes TEXT)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Bootice_Carved_Files ("
+            "Id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "Source_Start_Cluster INTEGER,"
+            "Source_End_Cluster INTEGER,"
+            "Source_Start_LBA INTEGER,"
+            "Source_End_LBA INTEGER,"
+            "Logical_Image_Path TEXT,"
+            "Logical_Start_Offset INTEGER,"
+            "Logical_End_Offset INTEGER,"
+            "File_Name TEXT,"
+            "File_Extension TEXT,"
+            "File_Size INTEGER,"
+            "Sha256 TEXT,"
+            "Output_Path TEXT,"
+            "Carver TEXT,"
+            "Validation_Result TEXT,"
+            "Confidence TEXT,"
+            "Status TEXT,"
+            "Notes TEXT)")
     };
     for (const QString &sql : creates) {
         if (!execSql(database, sql, errorMessage)) {
@@ -580,7 +752,12 @@ bool ShowcaseAnalyzer::analyzeUltraIso(QSqlDatabase &partitionDb, QSqlDatabase &
         return false;
     }
 
-    reportProgress(92, QStringLiteral("Enumerating Bootice root directory..."));
+    reportProgress(90, QStringLiteral("Analyzing Bootice FAT32 metadata..."));
+    if (!analyzeBooticeFat32(startLba, sectorCount, booticeDb, errorMessage)) {
+        return false;
+    }
+
+    reportProgress(96, QStringLiteral("Enumerating Bootice root directory..."));
     return enumerateBooticeRoot(startLba, booticeDb, errorMessage);
 }
 
@@ -1096,6 +1273,325 @@ bool ShowcaseAnalyzer::enumerateGptPartitionsFromReader(QSqlDatabase &partitionD
 
     return recordSummary(partitionDb, QStringLiteral("total_partition_bytes"), QString::number(totalBytes), errorMessage)
         && recordSummary(partitionDb, QStringLiteral("partition_enumerator"), QStringLiteral("GPT parser via ImageReader"), errorMessage);
+}
+
+bool ShowcaseAnalyzer::persistBooticeFat32Info(const BooticeFat32Info &info, QSqlDatabase &booticeDb, QString *errorMessage) const
+{
+    QSqlQuery insert(booticeDb);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO Bootice_Fat32_Info("
+        "Volume_Start_LBA, Volume_Sector_Count, Bytes_Per_Sector, Sectors_Per_Cluster, Reserved_Sectors, FAT_Count, "
+        "FAT_Size_Sectors, Root_Cluster, FAT_Start_LBA, Data_Start_LBA, Cluster_Count"
+        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+    insert.addBindValue(info.volumeStartLba);
+    insert.addBindValue(info.volumeSectorCount);
+    insert.addBindValue(info.bytesPerSector);
+    insert.addBindValue(info.sectorsPerCluster);
+    insert.addBindValue(info.reservedSectors);
+    insert.addBindValue(info.fatCount);
+    insert.addBindValue(info.fatSizeSectors);
+    insert.addBindValue(info.rootCluster);
+    insert.addBindValue(info.fatStartLba);
+    insert.addBindValue(info.dataStartLba);
+    insert.addBindValue(info.clusterCount);
+    return execQuery(insert, errorMessage);
+}
+
+bool ShowcaseAnalyzer::persistBooticeFat32Ranges(const BooticeFat32Info &info, const QByteArray &fat, QSqlDatabase &booticeDb, QString *errorMessage)
+{
+    if (info.clusterCount == 0 || info.clusterCount > quint64(std::numeric_limits<quint32>::max()) - 2ULL) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice FAT32 cluster count is outside supported bounds: %1.").arg(info.clusterCount);
+        }
+        return false;
+    }
+
+    auto insertCoverageRange = [&](const QString &type, quint32 startCluster, quint32 endCluster, const QString &notes) -> bool {
+        QSqlQuery insert(booticeDb);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO Bootice_Coverage(Coverage_Type, Start_Cluster, End_Cluster, Cluster_Count, Notes) "
+            "VALUES(?, ?, ?, ?, ?)"));
+        insert.addBindValue(type);
+        insert.addBindValue(startCluster);
+        insert.addBindValue(endCluster);
+        insert.addBindValue(quint64(endCluster) - quint64(startCluster) + 1ULL);
+        insert.addBindValue(notes);
+        return execQuery(insert, errorMessage);
+    };
+
+    auto insertRemainingRange = [&](quint32 startCluster, quint32 endCluster) -> bool {
+        const quint64 clusterCount = quint64(endCluster) - quint64(startCluster) + 1ULL;
+        const quint64 startLba = info.dataStartLba + (quint64(startCluster) - 2ULL) * info.sectorsPerCluster;
+        const quint64 endLba = info.dataStartLba + (quint64(endCluster) - 1ULL) * info.sectorsPerCluster - 1ULL;
+        QSqlQuery insert(booticeDb);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO Bootice_Remaining_Clusters(Start_Cluster, End_Cluster, Start_LBA, End_LBA, Cluster_Count, Byte_Count) "
+            "VALUES(?, ?, ?, ?, ?, ?)"));
+        insert.addBindValue(startCluster);
+        insert.addBindValue(endCluster);
+        insert.addBindValue(startLba);
+        insert.addBindValue(endLba);
+        insert.addBindValue(clusterCount);
+        insert.addBindValue(clusterCount * info.sectorsPerCluster * info.bytesPerSector);
+        return execQuery(insert, errorMessage);
+    };
+
+    bool haveFreeRange = false;
+    bool haveAllocatedRange = false;
+    quint32 freeStart = 0;
+    quint32 freeEnd = 0;
+    quint32 allocatedStart = 0;
+    quint32 allocatedEnd = 0;
+
+    auto flushFree = [&]() -> bool {
+        if (!haveFreeRange) {
+            return true;
+        }
+        const bool ok = insertRemainingRange(freeStart, freeEnd);
+        haveFreeRange = false;
+        return ok;
+    };
+    auto flushAllocated = [&]() -> bool {
+        if (!haveAllocatedRange) {
+            return true;
+        }
+        const bool ok = insertCoverageRange(QStringLiteral("Allocated"), allocatedStart, allocatedEnd, QStringLiteral("FAT32 cluster currently allocated by FAT."));
+        haveAllocatedRange = false;
+        return ok;
+    };
+
+    const quint32 lastCluster = quint32(info.clusterCount + 1ULL);
+    for (quint32 cluster = 2; cluster <= lastCluster; ++cluster) {
+        const bool free = isFat32FreeCluster(fat, cluster);
+        if (free) {
+            if (!flushAllocated()) {
+                return false;
+            }
+            if (!haveFreeRange) {
+                freeStart = cluster;
+                freeEnd = cluster;
+                haveFreeRange = true;
+            } else {
+                freeEnd = cluster;
+            }
+        } else {
+            if (!flushFree()) {
+                return false;
+            }
+            if (!haveAllocatedRange) {
+                allocatedStart = cluster;
+                allocatedEnd = cluster;
+                haveAllocatedRange = true;
+            } else {
+                allocatedEnd = cluster;
+            }
+        }
+    }
+
+    return flushFree() && flushAllocated();
+}
+
+bool ShowcaseAnalyzer::scanBooticeDeletedFiles(const BooticeFat32Info &info, const QByteArray &fat, QSqlDatabase &booticeDb, QString *errorMessage)
+{
+    auto clusterToOffset = [&](quint32 cluster) -> quint64 {
+        return (info.dataStartLba + (quint64(cluster) - 2ULL) * info.sectorsPerCluster) * info.bytesPerSector;
+    };
+    auto validCluster = [&](quint32 cluster) -> bool {
+        return cluster >= 2 && quint64(cluster) <= info.clusterCount + 1ULL;
+    };
+
+    QVector<quint32> pendingDirs{info.rootCluster};
+    QSet<quint32> visitedDirs;
+    int deletedCount = 0;
+
+    while (!pendingDirs.isEmpty()) {
+        const quint32 directoryCluster = pendingDirs.takeLast();
+        if (!validCluster(directoryCluster) || visitedDirs.contains(directoryCluster)) {
+            continue;
+        }
+        visitedDirs.insert(directoryCluster);
+
+        quint32 currentCluster = directoryCluster;
+        QSet<quint32> chainGuard;
+        while (validCluster(currentCluster) && !chainGuard.contains(currentCluster)) {
+            chainGuard.insert(currentCluster);
+            const quint64 clusterBytes = quint64(info.sectorsPerCluster) * info.bytesPerSector;
+            const QByteArray clusterData = readBytes(*m_reader, clusterToOffset(currentCluster), clusterBytes, errorMessage);
+            if (quint64(clusterData.size()) != clusterBytes) {
+                return false;
+            }
+
+            for (int offset = 0; offset + 32 <= clusterData.size(); offset += 32) {
+                const QByteArray entry = clusterData.mid(offset, 32);
+                const quint8 first = static_cast<quint8>(entry[0]);
+                const quint8 attributes = static_cast<quint8>(entry[11]);
+                if (first == 0x00) {
+                    continue;
+                }
+                if (attributes == 0x0F || (attributes & 0x08)) {
+                    continue;
+                }
+
+                const quint32 startCluster = (quint32(readLe16(entry, 20)) << 16) | readLe16(entry, 26);
+                const quint32 fileSize = readLe32(entry, 28);
+                const bool isDirectory = (attributes & 0x10) != 0;
+
+                if (first == 0xE5) {
+                    if (!looksLikeDirectoryEntry(entry)) {
+                        continue;
+                    }
+                    const QString name = decodeFatShortName(entry.left(11), true);
+                    QSqlQuery insert(booticeDb);
+                    insert.prepare(QStringLiteral(
+                        "INSERT INTO Bootice_Deleted_Files("
+                        "Directory_Cluster, Entry_Offset, Name_83, Attributes, Start_Cluster, File_Size, Recovery_Method, Validation_Status, Notes"
+                        ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+                    insert.addBindValue(directoryCluster);
+                    insert.addBindValue(offset);
+                    insert.addBindValue(name);
+                    insert.addBindValue(fatAttributesToString(attributes));
+                    insert.addBindValue(startCluster);
+                    insert.addBindValue(fileSize);
+                    insert.addBindValue(isDirectory ? QStringLiteral("Directory metadata only") : QStringLiteral("FAT32 deleted directory entry; data clusters are free candidates"));
+                    insert.addBindValue(validCluster(startCluster) ? QStringLiteral("Candidate") : QStringLiteral("Rejected"));
+                    insert.addBindValue(validCluster(startCluster)
+                        ? QStringLiteral("Deleted entry found. File data should be recovered from remaining free clusters and validated by format carver.")
+                        : QStringLiteral("Deleted entry start cluster is outside FAT32 data area."));
+                    if (!execQuery(insert, errorMessage)) {
+                        return false;
+                    }
+                    ++deletedCount;
+                    continue;
+                }
+
+                if (isDirectory && validCluster(startCluster)) {
+                    const QString name = decodeFatShortName(entry.left(11), false);
+                    if (name != QStringLiteral(".") && name != QStringLiteral("..")) {
+                        pendingDirs.append(startCluster);
+                    }
+                }
+            }
+
+            const quint32 nextCluster = fat32Entry(fat, currentCluster);
+            if (isFat32EndOfChain(nextCluster) || !validCluster(nextCluster)) {
+                break;
+            }
+            currentCluster = nextCluster;
+        }
+    }
+
+    Q_UNUSED(deletedCount)
+    return true;
+}
+
+bool ShowcaseAnalyzer::analyzeBooticeFat32(quint64 startLba, quint64 sectorCount, QSqlDatabase &booticeDb, QString *errorMessage)
+{
+    if (!m_reader || !m_reader->isOpen()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Image reader is not open.");
+        }
+        return false;
+    }
+
+    const QByteArray bootSector = readBytes(*m_reader, startLba * SectorSize, SectorSize, errorMessage);
+    if (bootSector.size() != SectorSize) {
+        return false;
+    }
+    if (static_cast<quint8>(bootSector[510]) != 0x55 || static_cast<quint8>(bootSector[511]) != 0xAA) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice hidden volume does not contain a valid FAT boot-sector signature.");
+        }
+        return false;
+    }
+
+    BooticeFat32Info info;
+    info.volumeStartLba = startLba;
+    info.bytesPerSector = readLe16(bootSector, 11);
+    info.sectorsPerCluster = static_cast<quint8>(bootSector[13]);
+    info.reservedSectors = readLe16(bootSector, 14);
+    info.fatCount = static_cast<quint8>(bootSector[16]);
+    const quint16 totalSectors16 = readLe16(bootSector, 19);
+    const quint16 fatSize16 = readLe16(bootSector, 22);
+    const quint32 totalSectors32 = readLe32(bootSector, 32);
+    info.fatSizeSectors = fatSize16 != 0 ? fatSize16 : readLe32(bootSector, 36);
+    info.rootCluster = readLe32(bootSector, 44);
+    info.volumeSectorCount = totalSectors16 != 0 ? totalSectors16 : totalSectors32;
+    if (info.volumeSectorCount == 0 || info.volumeSectorCount > sectorCount) {
+        info.volumeSectorCount = sectorCount;
+    }
+
+    if ((info.bytesPerSector != 512 && info.bytesPerSector != 1024 && info.bytesPerSector != 2048 && info.bytesPerSector != 4096)
+        || !isPowerOfTwo(info.sectorsPerCluster)
+        || info.reservedSectors == 0
+        || info.fatCount == 0
+        || info.fatSizeSectors == 0
+        || info.rootCluster < 2) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice hidden volume FAT32 BPB is invalid or unsupported.");
+        }
+        return false;
+    }
+
+    info.fatStartLba = startLba + info.reservedSectors;
+    info.dataStartLba = info.fatStartLba + quint64(info.fatCount) * info.fatSizeSectors;
+    const quint64 dataStartRelative = info.dataStartLba - startLba;
+    if (dataStartRelative >= info.volumeSectorCount) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice FAT32 data area starts outside the hidden volume.");
+        }
+        return false;
+    }
+    info.clusterCount = (info.volumeSectorCount - dataStartRelative) / info.sectorsPerCluster;
+    if (info.clusterCount == 0) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice FAT32 data area contains no clusters.");
+        }
+        return false;
+    }
+
+    const quint64 fatBytes = quint64(info.fatSizeSectors) * info.bytesPerSector;
+    if (fatBytes == 0 || fatBytes > quint64(std::numeric_limits<qsizetype>::max())) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Bootice FAT32 table is too large to read safely: %1 bytes.").arg(fatBytes);
+        }
+        return false;
+    }
+    const QByteArray fat = readBytes(*m_reader, info.fatStartLba * info.bytesPerSector, fatBytes, errorMessage);
+    if (quint64(fat.size()) != fatBytes) {
+        return false;
+    }
+
+    if (!booticeDb.transaction()) {
+        if (errorMessage) {
+            *errorMessage = booticeDb.lastError().text();
+        }
+        return false;
+    }
+
+    auto rollback = [&]() -> bool {
+        booticeDb.rollback();
+        return false;
+    };
+
+    if (!persistBooticeFat32Info(info, booticeDb, errorMessage)) {
+        return rollback();
+    }
+    reportProgress(91, QStringLiteral("Recording Bootice FAT32 remaining clusters..."));
+    if (!persistBooticeFat32Ranges(info, fat, booticeDb, errorMessage)) {
+        return rollback();
+    }
+    reportProgress(94, QStringLiteral("Scanning Bootice FAT32 deleted directory entries..."));
+    if (!scanBooticeDeletedFiles(info, fat, booticeDb, errorMessage)) {
+        return rollback();
+    }
+
+    if (!booticeDb.commit()) {
+        if (errorMessage) {
+            *errorMessage = booticeDb.lastError().text();
+        }
+        return false;
+    }
+    return true;
 }
 
 bool ShowcaseAnalyzer::enumerateBooticeRoot(quint64 startLba, QSqlDatabase &booticeDb, QString *errorMessage)

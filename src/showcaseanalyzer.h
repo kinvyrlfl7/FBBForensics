@@ -29,6 +29,21 @@ private:
         quint16 listSize = 0;
     };
 
+    struct BooticeFat32Info
+    {
+        quint64 volumeStartLba = 0;
+        quint64 volumeSectorCount = 0;
+        quint16 bytesPerSector = 0;
+        quint8 sectorsPerCluster = 0;
+        quint16 reservedSectors = 0;
+        quint8 fatCount = 0;
+        quint32 fatSizeSectors = 0;
+        quint32 rootCluster = 0;
+        quint64 fatStartLba = 0;
+        quint64 dataStartLba = 0;
+        quint64 clusterCount = 0;
+    };
+
     void reportProgress(int value, const QString &message) const;
 
     QString m_sourcePath;
@@ -54,6 +69,10 @@ private:
     bool enumerateMbrPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage);
     bool enumerateGptPartitionsFromReader(QSqlDatabase &partitionDb, QString *errorMessage);
     bool enumerateBooticeRoot(quint64 startLba, QSqlDatabase &booticeDb, QString *errorMessage);
+    bool analyzeBooticeFat32(quint64 startLba, quint64 sectorCount, QSqlDatabase &booticeDb, QString *errorMessage);
+    bool persistBooticeFat32Info(const BooticeFat32Info &info, QSqlDatabase &booticeDb, QString *errorMessage) const;
+    bool persistBooticeFat32Ranges(const BooticeFat32Info &info, const QByteArray &fat, QSqlDatabase &booticeDb, QString *errorMessage);
+    bool scanBooticeDeletedFiles(const BooticeFat32Info &info, const QByteArray &fat, QSqlDatabase &booticeDb, QString *errorMessage);
 
     void recordPrimaryAreaSectors(quint32 start, quint32 fileSize);
     void recordExtendedAreaSectors(quint32 start, quint32 fileSize);

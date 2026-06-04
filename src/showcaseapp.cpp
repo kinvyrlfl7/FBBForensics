@@ -1,5 +1,6 @@
 ﻿#include "showcaseapp.h"
 
+#include "booticecarvingworker.h"
 #include "fbinstcarvingworker.h"
 #include "imagereader.h"
 #include "rawdevice.h"
@@ -600,7 +601,7 @@ void ShowcaseApp::rebuildNavigation()
         QList<QPair<QString, QString>> tables;
     } specs[] = {
         {QStringLiteral("partition"), QStringLiteral("partition.db"), m_partitionDb, {{QStringLiteral("AnalysisSummary"), QStringLiteral("Analysis Summary")}, {QStringLiteral("Partitions"), QStringLiteral("Partition Map")}}},
-        {QStringLiteral("bootice"), QStringLiteral("bootice.db"), m_booticeDb, {{QStringLiteral("Bootice"), QStringLiteral("Bootice Metadata")}, {QStringLiteral("Bootice_Signatures"), QStringLiteral("Bootice Signatures")}, {QStringLiteral("Bootice_List"), QStringLiteral("Bootice Root Listing")}}},
+        {QStringLiteral("bootice"), QStringLiteral("bootice.db"), m_booticeDb, {{QStringLiteral("Bootice"), QStringLiteral("Bootice Metadata")}, {QStringLiteral("Bootice_Signatures"), QStringLiteral("Bootice Signatures")}, {QStringLiteral("Bootice_Fat32_Info"), QStringLiteral("Bootice FAT32 Info")}, {QStringLiteral("Bootice_List"), QStringLiteral("Bootice Root Listing")}, {QStringLiteral("Bootice_Deleted_Files"), QStringLiteral("Bootice Deleted Files")}, {QStringLiteral("Bootice_Remaining_Clusters"), QStringLiteral("Bootice Remaining Clusters")}, {QStringLiteral("Bootice_Coverage"), QStringLiteral("Bootice Coverage")}, {QStringLiteral("Bootice_Carving_Candidates"), QStringLiteral("Bootice Carving Candidates")}, {QStringLiteral("Bootice_Carved_Files"), QStringLiteral("Bootice Carved Files")}}},
         {QStringLiteral("fbinst"), QStringLiteral("fbinsttool.db"), m_fbinstDb, {{QStringLiteral("Fbinst"), QStringLiteral("Fbinst Metadata")}, {QStringLiteral("Fbinst_List"), QStringLiteral("Fbinst File List")}, {QStringLiteral("Fbinst_Sectors"), QStringLiteral("Fbinst Covered Sectors")}, {QStringLiteral("Fbinst_Remaining_Sectors"), QStringLiteral("Fbinst Remaining Sectors")}, {QStringLiteral("Fbinst_Carving_Candidates"), QStringLiteral("Fbinst Carving Candidates")}, {QStringLiteral("Fbinst_Carved_Files"), QStringLiteral("Fbinst Carved Files")}}}
     };
 
@@ -666,11 +667,14 @@ void ShowcaseApp::showTable(const QString &dbKey, const QString &tableName, cons
         m_detailView->setPlainText(QStringLiteral("%1 loaded. Select a file row and click 'Extract Selected File' or double-click the row to export it.").arg(title));
     } else if (tableName == QStringLiteral("Fbinst_Remaining_Sectors")) {
         m_detailView->setPlainText(QStringLiteral("%1 loaded. Click 'Carve Remaining Sectors' to run the internal signature carver against Primary and Extended remaining-sector streams.").arg(title));
+    } else if (tableName == QStringLiteral("Bootice_Remaining_Clusters")) {
+        m_detailView->setPlainText(QStringLiteral("%1 loaded. Click 'Carve Remaining Sectors' to run the internal signature carver against FAT32 free-cluster ranges.").arg(title));
     } else {
         m_detailView->setPlainText(QStringLiteral("%1 loaded. Select a row to inspect its properties.").arg(title));
     }
     m_extractButton->setEnabled(canExtractCurrentRecord());
-    m_carveButton->setEnabled(m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"));
+    m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+        || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
     m_statusLabel->setText(QStringLiteral("Loaded %1 rows from %2").arg(m_tableModel->rowCount()).arg(title));
 }
 
@@ -725,7 +729,8 @@ void ShowcaseApp::updateRecordDetails()
     const QModelIndexList rows = m_resultTable->selectionModel()->selectedRows();
     if (rows.isEmpty()) {
         m_extractButton->setEnabled(false);
-        m_carveButton->setEnabled(m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"));
+        m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+            || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
         return;
     }
     const QSqlRecord record = m_tableModel->record(rows.first().row());
@@ -750,9 +755,14 @@ void ShowcaseApp::updateRecordDetails()
         lines << QString();
         lines << QStringLiteral("Action: Click 'Carve Remaining Sectors' to carve all remaining Primary and Extended ranges with the internal signature carver.");
     }
+    if (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")) {
+        lines << QString();
+        lines << QStringLiteral("Action: Click 'Carve Remaining Sectors' to carve FAT32 free-cluster ranges from the Bootice hidden volume.");
+    }
     m_detailView->setPlainText(lines.join('\n'));
     m_extractButton->setEnabled(canExtractCurrentRecord());
-    m_carveButton->setEnabled(m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"));
+    m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+        || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
 }
 
 void ShowcaseApp::handleResultTableActivated(const QModelIndex &index)
@@ -982,8 +992,111 @@ void ShowcaseApp::extractSelectedFbinstFile()
     }
 }
 
+void ShowcaseApp::carveBooticeRemainingClusters()
+{
+    if (!m_booticeDb || !m_booticeDb->isOpen()) {
+        QMessageBox::warning(this, QStringLiteral("Carving unavailable"), QStringLiteral("Open an analyzed bootice.db first."));
+        return;
+    }
+    if (m_currentSourcePath.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Carving unavailable"), QStringLiteral("No evidence source is currently loaded."));
+        return;
+    }
+    if (m_carvingThread) {
+        if (m_carvingCancel) {
+            m_carvingCancel->store(true);
+        }
+        m_carveButton->setEnabled(false);
+        m_carveButton->setText(QStringLiteral("Cancelling..."));
+        appendLog(QStringLiteral("Cancellation requested for Bootice carving worker."));
+        updateProgress(m_progressBar ? m_progressBar->value() : 0, QStringLiteral("Cancelling Bootice carving..."));
+        return;
+    }
+
+    const QString booticeDbPath = m_booticeDb->databaseName();
+    const QString outputPath = m_outputDirEdit->text().trimmed();
+    if (booticeDbPath.isEmpty() || outputPath.isEmpty() || !QDir(outputPath).exists()) {
+        QMessageBox::warning(this, QStringLiteral("Carving unavailable"), QStringLiteral("A valid bootice.db and output folder are required."));
+        return;
+    }
+
+    if (m_tableModel && m_currentDbKey == QStringLiteral("bootice")) {
+        m_resultTable->setModel(nullptr);
+        delete m_tableModel;
+        m_tableModel = nullptr;
+    }
+    if (m_booticeDb->isOpen()) {
+        m_booticeDb->close();
+    }
+
+    BooticeCarvingWorker::Params params;
+    params.sourcePath = m_currentSourcePath;
+    params.booticeDbPath = booticeDbPath;
+    params.outputDir = outputPath;
+    m_carvingCancel = std::make_shared<std::atomic_bool>(false);
+    params.cancelRequested = m_carvingCancel;
+
+    m_carveButton->setText(QStringLiteral("Cancel Carving"));
+    m_carveButton->setEnabled(true);
+    updateProgress(0, QStringLiteral("Starting background Bootice FAT32 carving..."));
+    appendLog(QStringLiteral("Starting Bootice FAT32 carving worker thread."));
+
+    auto worker = std::make_shared<BooticeCarvingWorker>(params);
+    m_carvingThread = QThread::create([this, worker]() {
+        const BooticeCarvingWorker::Result result = worker->run(
+            [this](int value, const QString &message) {
+                QMetaObject::invokeMethod(this, [this, value, message]() {
+                    updateProgress(value, message);
+                }, Qt::QueuedConnection);
+            },
+            [this](const QString &message) {
+                QMetaObject::invokeMethod(this, [this, message]() {
+                    enqueueLog(message);
+                }, Qt::QueuedConnection);
+            });
+
+        QMetaObject::invokeMethod(this, [this, result]() {
+            flushPendingLogs();
+            m_carvingThread = nullptr;
+            m_carvingCancel.reset();
+
+            if (!m_booticeDb->isOpen() && !m_booticeDb->open()) {
+                appendLog(QStringLiteral("Unable to reopen bootice.db after carving: %1").arg(m_booticeDb->lastError().text()));
+            }
+            rebuildNavigation();
+            m_carveButton->setText(QStringLiteral("Carve Remaining Sectors"));
+            m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+                || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
+            if (m_booticeDb->isOpen()) {
+                showTable(QStringLiteral("bootice"), QStringLiteral("Bootice_Carved_Files"), QStringLiteral("Bootice Carved Files"));
+            }
+
+            if (result.cancelled) {
+                updateProgress(m_progressBar ? m_progressBar->value() : 0, QStringLiteral("Bootice FAT32 carving cancelled"));
+                appendLog(result.message);
+                QMessageBox::information(this, QStringLiteral("Carving cancelled"), result.message);
+            } else if (result.ok) {
+                updateProgress(100, QStringLiteral("Bootice FAT32 carving complete"));
+                appendLog(result.message);
+                QMessageBox::information(this, QStringLiteral("Carving complete"), result.message);
+            } else {
+                updateProgress(m_progressBar ? m_progressBar->value() : 0, QStringLiteral("Bootice FAT32 carving failed"));
+                appendLog(result.message);
+                QMessageBox::critical(this, QStringLiteral("Carving failed"), result.message);
+            }
+        }, Qt::QueuedConnection);
+    });
+    connect(m_carvingThread, &QThread::finished, m_carvingThread, &QObject::deleteLater);
+    m_carvingThread->start();
+}
+
 void ShowcaseApp::carveFbinstRemainingSectors()
 {
+    if (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")) {
+        carveBooticeRemainingClusters();
+        return;
+    }
+
     if (!m_fbinstDb || !m_fbinstDb->isOpen()) {
         QMessageBox::warning(this, QStringLiteral("Carving unavailable"), QStringLiteral("Open an analyzed fbinsttool.db first."));
         return;
@@ -1058,7 +1171,8 @@ void ShowcaseApp::carveFbinstRemainingSectors()
             }
             rebuildNavigation();
             m_carveButton->setText(QStringLiteral("Carve Remaining Sectors"));
-            m_carveButton->setEnabled(m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"));
+            m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+                || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
             if (m_fbinstDb->isOpen()) {
                 showTable(QStringLiteral("fbinst"), QStringLiteral("Fbinst_Carved_Files"), QStringLiteral("Fbinst Carved Files"));
             }
@@ -1453,7 +1567,8 @@ void ShowcaseApp::carveFbinstRemainingSectors()
     }
     rebuildNavigation();
     QApplication::restoreOverrideCursor();
-    m_carveButton->setEnabled(m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"));
+    m_carveButton->setEnabled((m_currentDbKey == QStringLiteral("fbinst") && m_currentTableName == QStringLiteral("Fbinst_Remaining_Sectors"))
+        || (m_currentDbKey == QStringLiteral("bootice") && m_currentTableName == QStringLiteral("Bootice_Remaining_Clusters")));
     updateProgress(100, QStringLiteral("Internal signature carving complete"));
 
     const QString message = QStringLiteral("Internal signature carving complete. %1 files recovered from %2 candidates.").arg(recoveredCount).arg(carvingRanges.size());

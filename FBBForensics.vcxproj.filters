@@ -15,6 +15,12 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\booticecarvingworker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\fbinstcarvingworker.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\imagereader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -35,6 +41,12 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\booticecarvingworker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\fbinstcarvingworker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\imagereader.h">
       <Filter>Header Files</Filter>
     </ClInclude>

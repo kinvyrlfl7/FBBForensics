@@ -44,6 +44,7 @@ private:
     void extractSelectedBooticeFile();
     void extractSelectedFbinstFile();
     void carveFbinstRemainingSectors();
+    void carveBooticeRemainingClusters();
     void handleResultTableActivated(const QModelIndex &index);
     void updateProgress(int value, const QString &message);
     void enqueueLog(const QString &message);
