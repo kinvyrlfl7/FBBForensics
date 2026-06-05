@@ -1,5 +1,6 @@
 ﻿#include "showcaseapp.h"
 
+#include "benchmarkrecorder.h"
 #include "booticecarvingworker.h"
 #include "fbinstcarvingworker.h"
 #include "imagereader.h"
@@ -57,6 +58,20 @@ constexpr int DbKeyRole = Qt::UserRole + 3;
 constexpr quint64 CarvingChunkSectors = 8192;
 constexpr qint64 CarvingScanWindowBytes = qint64(256) * 1024 * 1024;
 constexpr qint64 CarvingScanOverlapBytes = qint64(16) * 1024 * 1024;
+
+struct BenchmarkRunFinishGuard
+{
+    BenchmarkRecorder *recorder = nullptr;
+    QString status = QStringLiteral("Failed");
+    QString notes;
+
+    ~BenchmarkRunFinishGuard()
+    {
+        if (recorder) {
+            recorder->finishRun(status, notes);
+        }
+    }
+};
 
 bool materializeSourceToRawFile(const QString &sourcePath, QTemporaryFile &rawFile, QString *errorMessage)
 {
@@ -272,9 +287,11 @@ ShowcaseApp::ShowcaseApp()
     : m_partitionDb(new QSqlDatabase())
     , m_booticeDb(new QSqlDatabase())
     , m_fbinstDb(new QSqlDatabase())
+    , m_benchmarkDb(new QSqlDatabase())
     , m_partitionConnectionName(QStringLiteral("showcase-partition"))
     , m_booticeConnectionName(QStringLiteral("showcase-bootice"))
     , m_fbinstConnectionName(QStringLiteral("showcase-fbinst"))
+    , m_benchmarkConnectionName(QStringLiteral("showcase-benchmark"))
 {
     setWindowTitle(QStringLiteral("FBBForensics Workbench"));
     resize(1240, 780);
@@ -450,6 +467,7 @@ ShowcaseApp::~ShowcaseApp()
     delete m_partitionDb;
     delete m_booticeDb;
     delete m_fbinstDb;
+    delete m_benchmarkDb;
 }
 
 QSqlDatabase *ShowcaseApp::databaseForKey(const QString &dbKey) const
@@ -462,6 +480,9 @@ QSqlDatabase *ShowcaseApp::databaseForKey(const QString &dbKey) const
     }
     if (dbKey == QStringLiteral("fbinst")) {
         return m_fbinstDb;
+    }
+    if (dbKey == QStringLiteral("benchmark")) {
+        return m_benchmarkDb;
     }
     return nullptr;
 }
@@ -586,6 +607,7 @@ void ShowcaseApp::closeDatabases()
     closeOne(m_partitionDb, m_partitionConnectionName);
     closeOne(m_booticeDb, m_booticeConnectionName);
     closeOne(m_fbinstDb, m_fbinstConnectionName);
+    closeOne(m_benchmarkDb, m_benchmarkConnectionName);
     m_currentDbKey.clear();
     m_currentTableName.clear();
 }
@@ -602,7 +624,8 @@ void ShowcaseApp::rebuildNavigation()
     } specs[] = {
         {QStringLiteral("partition"), QStringLiteral("partition.db"), m_partitionDb, {{QStringLiteral("AnalysisSummary"), QStringLiteral("Analysis Summary")}, {QStringLiteral("Partitions"), QStringLiteral("Partition Map")}}},
         {QStringLiteral("bootice"), QStringLiteral("bootice.db"), m_booticeDb, {{QStringLiteral("Bootice"), QStringLiteral("Bootice Metadata")}, {QStringLiteral("Bootice_Signatures"), QStringLiteral("Bootice Signatures")}, {QStringLiteral("Bootice_Fat32_Info"), QStringLiteral("Bootice FAT32 Info")}, {QStringLiteral("Bootice_List"), QStringLiteral("Bootice Root Listing")}, {QStringLiteral("Bootice_Deleted_Files"), QStringLiteral("Bootice Deleted Files")}, {QStringLiteral("Bootice_Remaining_Clusters"), QStringLiteral("Bootice Remaining Clusters")}, {QStringLiteral("Bootice_Coverage"), QStringLiteral("Bootice Coverage")}, {QStringLiteral("Bootice_Carving_Candidates"), QStringLiteral("Bootice Carving Candidates")}, {QStringLiteral("Bootice_Carved_Files"), QStringLiteral("Bootice Carved Files")}}},
-        {QStringLiteral("fbinst"), QStringLiteral("fbinsttool.db"), m_fbinstDb, {{QStringLiteral("Fbinst"), QStringLiteral("Fbinst Metadata")}, {QStringLiteral("Fbinst_List"), QStringLiteral("Fbinst File List")}, {QStringLiteral("Fbinst_Sectors"), QStringLiteral("Fbinst Covered Sectors")}, {QStringLiteral("Fbinst_Remaining_Sectors"), QStringLiteral("Fbinst Remaining Sectors")}, {QStringLiteral("Fbinst_Carving_Candidates"), QStringLiteral("Fbinst Carving Candidates")}, {QStringLiteral("Fbinst_Carved_Files"), QStringLiteral("Fbinst Carved Files")}}}
+        {QStringLiteral("fbinst"), QStringLiteral("fbinsttool.db"), m_fbinstDb, {{QStringLiteral("Fbinst"), QStringLiteral("Fbinst Metadata")}, {QStringLiteral("Fbinst_List"), QStringLiteral("Fbinst File List")}, {QStringLiteral("Fbinst_Sectors"), QStringLiteral("Fbinst Covered Sectors")}, {QStringLiteral("Fbinst_Remaining_Sectors"), QStringLiteral("Fbinst Remaining Sectors")}, {QStringLiteral("Fbinst_Carving_Candidates"), QStringLiteral("Fbinst Carving Candidates")}, {QStringLiteral("Fbinst_Carved_Files"), QStringLiteral("Fbinst Carved Files")}}},
+        {QStringLiteral("benchmark"), QStringLiteral("benchmark.db"), m_benchmarkDb, {{QStringLiteral("Benchmark_Runs"), QStringLiteral("Benchmark Runs")}, {QStringLiteral("Benchmark_Stages"), QStringLiteral("Benchmark Stages")}, {QStringLiteral("Benchmark_Samples"), QStringLiteral("Benchmark Samples")}, {QStringLiteral("Benchmark_Results"), QStringLiteral("Benchmark Results")}}}
     };
 
     QTreeWidgetItem *firstLeaf = nullptr;
@@ -817,6 +840,26 @@ void ShowcaseApp::extractSelectedBooticeFile()
         return;
     }
 
+    const QString benchmarkPath = m_benchmarkDbPath.isEmpty()
+        ? QDir(m_outputDirEdit->text().trimmed()).filePath(QStringLiteral("benchmark.db"))
+        : m_benchmarkDbPath;
+    BenchmarkRecorder benchmark(benchmarkPath);
+    benchmark.beginRun(BenchmarkRecorder::RunConfig{
+        QStringLiteral("Bootice File Extraction"),
+        m_currentSourcePath,
+        QStringLiteral("Bootice"),
+        QStringLiteral("Extraction"),
+        QStringLiteral("Extract one file from the Bootice FAT32 hidden area by libtsk file metadata.")
+    });
+    BenchmarkRunFinishGuard benchmarkGuard{&benchmark, QStringLiteral("Failed"), QString()};
+    BenchmarkStageScope extractionStage(&benchmark, QStringLiteral("Bootice File Extraction"));
+    auto failBenchmark = [&](const QString &message) {
+        benchmarkGuard.status = QStringLiteral("Failed");
+        benchmarkGuard.notes = message;
+        extractionStage.setStatus(QStringLiteral("Failed"));
+        extractionStage.setNotes(message);
+    };
+
     QString tskSourcePath = m_currentSourcePath;
     QTemporaryFile temporaryRaw;
     if (QFileInfo(m_currentSourcePath).suffix().compare(QStringLiteral("e01"), Qt::CaseInsensitive) == 0) {
@@ -826,6 +869,7 @@ void ShowcaseApp::extractSelectedBooticeFile()
         const bool prepared = materializeSourceToRawFile(m_currentSourcePath, temporaryRaw, &prepareError);
         QApplication::restoreOverrideCursor();
         if (!prepared) {
+            failBenchmark(prepareError);
             QMessageBox::critical(this, QStringLiteral("Extraction failed"), prepareError);
             appendLog(QStringLiteral("Bootice extraction failed for %1: %2").arg(entryName, prepareError));
             return;
@@ -835,6 +879,7 @@ void ShowcaseApp::extractSelectedBooticeFile()
 
     TSK_IMG_INFO *image = tsk_img_open_utf8_sing(tskSourcePath.toUtf8().constData(), TSK_IMG_TYPE_DETECT, 0);
     if (!image) {
+        failBenchmark(QStringLiteral("libtsk could not reopen the source image."));
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("libtsk could not reopen the source image."));
         return;
     }
@@ -842,6 +887,7 @@ void ShowcaseApp::extractSelectedBooticeFile()
     TSK_FS_INFO *filesystem = tsk_fs_open_img(image, startLba * ShowcaseAnalyzer::SectorSize, TSK_FS_TYPE_DETECT);
     if (!filesystem) {
         tsk_img_close(image);
+        failBenchmark(QStringLiteral("libtsk could not open the Bootice filesystem."));
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("libtsk could not open the Bootice filesystem."));
         return;
     }
@@ -854,16 +900,19 @@ void ShowcaseApp::extractSelectedBooticeFile()
         }
         tsk_fs_close(filesystem);
         tsk_img_close(image);
+        failBenchmark(QStringLiteral("libtsk could not open the selected file inside the Bootice filesystem."));
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("libtsk could not open the selected file inside the Bootice filesystem."));
         return;
     }
 
     QFile output(outputPath);
     if (!output.open(QIODevice::WriteOnly)) {
+        const QString message = QStringLiteral("Unable to create output file: %1").arg(output.errorString());
         tsk_fs_file_close(tskFile);
         tsk_fs_close(filesystem);
         tsk_img_close(image);
-        QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("Unable to create output file: %1").arg(output.errorString()));
+        failBenchmark(message);
+        QMessageBox::critical(this, QStringLiteral("Extraction failed"), message);
         return;
     }
 
@@ -897,11 +946,17 @@ void ShowcaseApp::extractSelectedBooticeFile()
 
     if (!ok) {
         output.remove();
+        failBenchmark(errorMessage);
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), errorMessage);
         appendLog(QStringLiteral("Bootice extraction failed for %1: %2").arg(entryName, errorMessage));
         return;
     }
 
+    extractionStage.addBytesRead(fileSize);
+    extractionStage.addBytesWritten(fileSize);
+    extractionStage.addItems(1);
+    benchmarkGuard.status = QStringLiteral("Completed");
+    benchmarkGuard.notes = QStringLiteral("Extracted %1 bytes to %2.").arg(fileSize).arg(QFileInfo(outputPath).absoluteFilePath());
     appendLog(QStringLiteral("Extracted Bootice file: %1 -> %2").arg(entryName, QFileInfo(outputPath).absoluteFilePath()));
     QMessageBox::information(this, QStringLiteral("Extraction complete"), QStringLiteral("File extracted to %1").arg(QFileInfo(outputPath).absoluteFilePath()));
 }
@@ -944,16 +999,40 @@ void ShowcaseApp::extractSelectedFbinstFile()
         }
     }
 
+    const QString benchmarkPath = m_benchmarkDbPath.isEmpty()
+        ? QDir(m_outputDirEdit->text().trimmed()).filePath(QStringLiteral("benchmark.db"))
+        : m_benchmarkDbPath;
+    BenchmarkRecorder benchmark(benchmarkPath);
+    benchmark.beginRun(BenchmarkRecorder::RunConfig{
+        QStringLiteral("FbinstTool File Extraction"),
+        m_currentSourcePath,
+        QStringLiteral("FbinstTool"),
+        QStringLiteral("Extraction"),
+        QStringLiteral("Extract selected files from FbinstTool File_List metadata using read-only source access.")
+    });
+    BenchmarkRunFinishGuard benchmarkGuard{&benchmark, QStringLiteral("Failed"), QString()};
+    BenchmarkStageScope extractionStage(&benchmark, QStringLiteral("FbinstTool File Extraction"));
+    auto failBenchmark = [&](const QString &message) {
+        benchmarkGuard.status = QStringLiteral("Failed");
+        benchmarkGuard.notes = message;
+        extractionStage.setStatus(QStringLiteral("Failed"));
+        extractionStage.setNotes(message);
+    };
+
     std::unique_ptr<ImageReader> reader = ImageReader::create(m_currentSourcePath);
     QString readerError;
     if (!reader || !reader->open(&readerError)) {
-        QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("Unable to reopen the source image: %1").arg(readerError));
+        const QString message = QStringLiteral("Unable to reopen the source image: %1").arg(readerError);
+        failBenchmark(message);
+        QMessageBox::critical(this, QStringLiteral("Extraction failed"), message);
         return;
     }
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     int successCount = 0;
     int failureCount = 0;
+    quint64 bytesRead = 0;
+    quint64 bytesWritten = 0;
     QStringList failureLines;
 
     for (int index = 0; index < records.size(); ++index) {
@@ -969,6 +1048,9 @@ void ShowcaseApp::extractSelectedFbinstFile()
 
         if (extractFbinstRecordToFile(record, *reader, outputPath, &errorMessage)) {
             ++successCount;
+            const quint64 fileSize = record.value(QStringLiteral("File_Size")).toULongLong();
+            bytesRead += fileSize;
+            bytesWritten += quint64(QFileInfo(outputPath).size());
             appendLog(QStringLiteral("Extracted Fbinst file: %1 -> %2").arg(entryName, QFileInfo(outputPath).absoluteFilePath()));
         } else {
             ++failureCount;
@@ -982,6 +1064,14 @@ void ShowcaseApp::extractSelectedFbinstFile()
     updateProgress(100, QStringLiteral("Fbinst extraction complete"));
 
     const QString summary = QStringLiteral("Fbinst extraction complete. Success: %1, Failed: %2.").arg(successCount).arg(failureCount);
+    extractionStage.addBytesRead(bytesRead);
+    extractionStage.addBytesWritten(bytesWritten);
+    extractionStage.addItems(successCount + failureCount);
+    if (failureCount > 0) {
+        extractionStage.setStatus(QStringLiteral("CompletedWithFailures"));
+    }
+    benchmarkGuard.status = failureCount > 0 ? QStringLiteral("CompletedWithFailures") : QStringLiteral("Completed");
+    benchmarkGuard.notes = summary;
     appendLog(summary);
     if (failureCount > 0) {
         QMessageBox::warning(this, QStringLiteral("Extraction complete with failures"), summary + QStringLiteral("\n\n") + failureLines.join('\n'));
@@ -1028,10 +1118,16 @@ void ShowcaseApp::carveBooticeRemainingClusters()
     if (m_booticeDb->isOpen()) {
         m_booticeDb->close();
     }
+    if (m_benchmarkDb && m_benchmarkDb->isOpen()) {
+        m_benchmarkDb->close();
+    }
 
     BooticeCarvingWorker::Params params;
     params.sourcePath = m_currentSourcePath;
     params.booticeDbPath = booticeDbPath;
+    params.benchmarkDbPath = m_benchmarkDbPath.isEmpty()
+        ? QDir(outputPath).filePath(QStringLiteral("benchmark.db"))
+        : m_benchmarkDbPath;
     params.outputDir = outputPath;
     m_carvingCancel = std::make_shared<std::atomic_bool>(false);
     params.cancelRequested = m_carvingCancel;
@@ -1062,6 +1158,9 @@ void ShowcaseApp::carveBooticeRemainingClusters()
 
             if (!m_booticeDb->isOpen() && !m_booticeDb->open()) {
                 appendLog(QStringLiteral("Unable to reopen bootice.db after carving: %1").arg(m_booticeDb->lastError().text()));
+            }
+            if (m_benchmarkDb && m_benchmarkDb->isValid() && !m_benchmarkDb->isOpen() && !m_benchmarkDb->open()) {
+                appendLog(QStringLiteral("Unable to reopen benchmark.db after carving: %1").arg(m_benchmarkDb->lastError().text()));
             }
             rebuildNavigation();
             m_carveButton->setText(QStringLiteral("Carve Remaining Sectors"));
@@ -1131,10 +1230,16 @@ void ShowcaseApp::carveFbinstRemainingSectors()
     if (m_fbinstDb->isOpen()) {
         m_fbinstDb->close();
     }
+    if (m_benchmarkDb && m_benchmarkDb->isOpen()) {
+        m_benchmarkDb->close();
+    }
 
     FbinstCarvingWorker::Params params;
     params.sourcePath = m_currentSourcePath;
     params.fbinstDbPath = fbinstDbPath;
+    params.benchmarkDbPath = m_benchmarkDbPath.isEmpty()
+        ? QDir(outputPath).filePath(QStringLiteral("benchmark.db"))
+        : m_benchmarkDbPath;
     params.outputDir = outputPath;
     m_carvingCancel = std::make_shared<std::atomic_bool>(false);
     params.cancelRequested = m_carvingCancel;
@@ -1168,6 +1273,9 @@ void ShowcaseApp::carveFbinstRemainingSectors()
                 if (!m_fbinstDb->open()) {
                     appendLog(QStringLiteral("Unable to reopen fbinsttool.db after carving: %1").arg(m_fbinstDb->lastError().text()));
                 }
+            }
+            if (m_benchmarkDb && m_benchmarkDb->isValid() && !m_benchmarkDb->isOpen() && !m_benchmarkDb->open()) {
+                appendLog(QStringLiteral("Unable to reopen benchmark.db after carving: %1").arg(m_benchmarkDb->lastError().text()));
             }
             rebuildNavigation();
             m_carveButton->setText(QStringLiteral("Carve Remaining Sectors"));
@@ -1637,18 +1745,29 @@ void ShowcaseApp::runAnalysis()
     const QString partitionPath = QDir(outputPath).filePath(QStringLiteral("partition.db"));
     const QString booticePath = QDir(outputPath).filePath(QStringLiteral("bootice.db"));
     const QString fbinstPath = QDir(outputPath).filePath(QStringLiteral("fbinsttool.db"));
+    const QString benchmarkPath = QDir(outputPath).filePath(QStringLiteral("benchmark.db"));
+    m_benchmarkDbPath = benchmarkPath;
 
     updateProgress(0, QStringLiteral("Preparing analysis..."));
     appendLog(QStringLiteral("Evidence source queued: %1").arg(sourcePath));
     appendLog(QStringLiteral("Partition DB: %1").arg(QFileInfo(partitionPath).absoluteFilePath()));
     appendLog(QStringLiteral("Bootice DB: %1").arg(QFileInfo(booticePath).absoluteFilePath()));
     appendLog(QStringLiteral("Fbinst DB: %1").arg(QFileInfo(fbinstPath).absoluteFilePath()));
+    appendLog(QStringLiteral("Benchmark DB: %1").arg(QFileInfo(benchmarkPath).absoluteFilePath()));
     m_statusLabel->setText(QStringLiteral("Running analysis..."));
     m_sourceLabel->setText(sourcePath);
     m_runButton->setEnabled(false);
     QApplication::setOverrideCursor(Qt::WaitCursor);
 
     closeDatabases();
+    BenchmarkRecorder benchmark(benchmarkPath);
+    benchmark.beginRun(BenchmarkRecorder::RunConfig{
+        QStringLiteral("Full Evidence Analysis"),
+        sourcePath,
+        QStringLiteral("Auto"),
+        QStringLiteral("Detection"),
+        QStringLiteral("Hidden-area detection, partition mapping, Bootice metadata parsing, and FbinstTool metadata parsing.")
+    });
     *m_partitionDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_partitionConnectionName);
     *m_booticeDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_booticeConnectionName);
     *m_fbinstDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_fbinstConnectionName);
@@ -1660,6 +1779,7 @@ void ShowcaseApp::runAnalysis()
     bool ok = false;
     bool verificationFailed = false;
     QString verificationReason;
+    bool benchmarkFinished = false;
 
     if (!m_partitionDb->open()) {
         statusMessage = QStringLiteral("Unable to open partition.db: %1").arg(m_partitionDb->lastError().text());
@@ -1668,11 +1788,19 @@ void ShowcaseApp::runAnalysis()
     } else if (!m_fbinstDb->open()) {
         statusMessage = QStringLiteral("Unable to open fbinsttool.db: %1").arg(m_fbinstDb->lastError().text());
     } else {
+        std::unique_ptr<BenchmarkStageScope> analysisStage = std::make_unique<BenchmarkStageScope>(&benchmark, QStringLiteral("Hidden Area Detection and Metadata Parsing"));
         ShowcaseAnalyzer analyzer(sourcePath);
-        analyzer.setProgressCallback([this](int value, const QString &message) {
+        analyzer.setProgressCallback([this, &benchmark](int value, const QString &message) {
+            benchmark.sample(QStringLiteral("Hidden Area Detection and Metadata Parsing"), value, message);
             updateProgress(value, message);
         });
         ok = analyzer.analyze(*m_partitionDb, *m_booticeDb, *m_fbinstDb, &statusMessage);
+        analysisStage->addItems(1);
+        if (!ok) {
+            analysisStage->setStatus(QStringLiteral("Failed"));
+            analysisStage->setNotes(statusMessage);
+        }
+        analysisStage.reset();
         if (ok) {
             QSqlQuery verificationQuery(*m_partitionDb);
             verificationQuery.prepare(QStringLiteral(
@@ -1698,8 +1826,18 @@ void ShowcaseApp::runAnalysis()
             } else {
                 statusMessage = QStringLiteral("Acquisition complete. Results stored in partition.db, bootice.db, and fbinsttool.db.");
             }
+            benchmark.finishRun(verificationFailed ? QStringLiteral("VerificationFailed") : QStringLiteral("Completed"), statusMessage);
+            benchmarkFinished = true;
+            *m_benchmarkDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_benchmarkConnectionName);
+            m_benchmarkDb->setDatabaseName(benchmarkPath);
+            if (!m_benchmarkDb->open()) {
+                appendLog(QStringLiteral("Unable to open benchmark.db for viewing: %1").arg(m_benchmarkDb->lastError().text()));
+            }
             rebuildNavigation();
         }
+    }
+    if (!benchmarkFinished) {
+        benchmark.finishRun(ok ? (verificationFailed ? QStringLiteral("VerificationFailed") : QStringLiteral("Completed")) : QStringLiteral("Failed"), statusMessage);
     }
 
     QApplication::restoreOverrideCursor();

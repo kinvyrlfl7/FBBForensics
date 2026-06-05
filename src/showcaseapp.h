@@ -78,13 +78,16 @@ private:
     QSqlDatabase *m_partitionDb = nullptr;
     QSqlDatabase *m_booticeDb = nullptr;
     QSqlDatabase *m_fbinstDb = nullptr;
+    QSqlDatabase *m_benchmarkDb = nullptr;
     QSqlTableModel *m_tableModel = nullptr;
     QString m_partitionConnectionName;
     QString m_booticeConnectionName;
     QString m_fbinstConnectionName;
+    QString m_benchmarkConnectionName;
     QString m_currentDbKey;
     QString m_currentTableName;
     QString m_currentSourcePath;
+    QString m_benchmarkDbPath;
     QString m_photoRecPath;
     QThread *m_carvingThread = nullptr;
     QTimer *m_logFlushTimer = nullptr;

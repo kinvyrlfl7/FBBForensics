@@ -1,5 +1,6 @@
 #include "fbinstcarvingworker.h"
 
+#include "benchmarkrecorder.h"
 #include "imagereader.h"
 #include "signaturecarver.h"
 #include "showcaseanalyzer.h"
@@ -27,6 +28,20 @@ constexpr qint64 CarvingScanWindowBytes = qint64(256) * 1024 * 1024;
 constexpr qint64 CarvingScanOverlapBytes = qint64(16) * 1024 * 1024;
 constexpr quint64 CrossAreaPrimaryTailSectors = 131072;
 constexpr quint64 CrossAreaExtendedHeadSectors = 262144;
+
+struct BenchmarkRunFinishGuard
+{
+    BenchmarkRecorder *recorder = nullptr;
+    QString status = QStringLiteral("Failed");
+    QString notes;
+
+    ~BenchmarkRunFinishGuard()
+    {
+        if (recorder) {
+            recorder->finishRun(status, notes);
+        }
+    }
+};
 
 struct FbinstCarveRange
 {
@@ -493,8 +508,35 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         return m_params.cancelRequested && m_params.cancelRequested->load();
     };
 
+    BenchmarkRecorder benchmark(m_params.benchmarkDbPath);
+    benchmark.beginRun(BenchmarkRecorder::RunConfig{
+        QStringLiteral("FbinstTool Remaining Sector Carving"),
+        m_params.sourcePath,
+        QStringLiteral("FbinstTool"),
+        QStringLiteral("Carving"),
+        QStringLiteral("Build logical Primary/Extended remaining-sector streams, scan signatures, validate file structure, and write recovered files.")
+    });
+    BenchmarkRunFinishGuard benchmarkGuard{&benchmark, QStringLiteral("Failed"), QString()};
+    BenchmarkStageScope carvingStage(&benchmark, QStringLiteral("Fbinst Remaining Sector Carving"));
+    quint64 benchmarkBytesRead = 0;
+    quint64 benchmarkBytesWritten = 0;
+    quint64 benchmarkItems = 0;
+    auto completeBenchmark = [&](const QString &status, const QString &message) {
+        carvingStage.addBytesRead(benchmarkBytesRead);
+        carvingStage.addBytesWritten(benchmarkBytesWritten);
+        carvingStage.addItems(benchmarkItems);
+        carvingStage.setStatus(status);
+        carvingStage.setNotes(message);
+        benchmarkGuard.status = status;
+        benchmarkGuard.notes = message;
+    };
+    auto benchmarkProgress = [&](int value, const QString &message) {
+        benchmark.sample(QStringLiteral("Fbinst Remaining Sector Carving"), value, message);
+        progress(value, message);
+    };
+
     Result result;
-    progress(0, QStringLiteral("Preparing internal signature carving..."));
+    benchmarkProgress(0, QStringLiteral("Preparing internal signature carving..."));
     log(QStringLiteral("Internal signature carver enabled in background worker thread."));
 
     const QString connectionName = QStringLiteral("fbinst_carving_worker_%1").arg(reinterpret_cast<quintptr>(this));
@@ -511,6 +553,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         db.setDatabaseName(m_params.fbinstDbPath);
         if (!db.open()) {
             result.message = QStringLiteral("Unable to open fbinsttool.db in worker: %1").arg(db.lastError().text());
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
         QSqlQuery(db).exec(QStringLiteral("PRAGMA busy_timeout=10000"));
@@ -520,6 +563,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         if (!ensureCarvedTable(db, &errorMessage) || !ensureCandidateTable(db, &errorMessage)) {
             result.message = QStringLiteral("Unable to prepare Fbinst_Carved_Files: %1").arg(errorMessage);
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -527,12 +571,14 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         if (!clear.exec(QStringLiteral("DELETE FROM Fbinst_Carved_Files"))) {
             result.message = QStringLiteral("Unable to clear Fbinst_Carved_Files: %1").arg(clear.lastError().text());
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
         QSqlQuery clearCandidates(db);
         if (!clearCandidates.exec(QStringLiteral("DELETE FROM Fbinst_Carving_Candidates"))) {
             result.message = QStringLiteral("Unable to clear Fbinst_Carving_Candidates: %1").arg(clearCandidates.lastError().text());
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -542,6 +588,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         if (!metaQuery.exec(QStringLiteral("SELECT List_Size, Primary_Size FROM Fbinst LIMIT 1")) || !metaQuery.next()) {
             result.message = QStringLiteral("Unable to query Fbinst metadata for data-area base: %1").arg(metaQuery.lastError().text());
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
         primaryDataStartSector = 68ULL + metaQuery.value(0).toULongLong();
@@ -558,6 +605,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                 "ORDER BY CASE Area_Type WHEN 'Primary' THEN 0 WHEN 'Extended' THEN 1 ELSE 2 END, Sector_Number"))) {
             result.message = QStringLiteral("Unable to query Fbinst_Remaining_Sectors: %1").arg(query.lastError().text());
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -637,6 +685,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
             result.ok = true;
             result.message = QStringLiteral("No remaining Fbinst sectors were found.");
             db.close();
+            completeBenchmark(QStringLiteral("Completed"), result.message);
             return result;
         }
 
@@ -645,6 +694,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         if (!reader || !reader->open(&readerError)) {
             result.message = QStringLiteral("Unable to open source image: %1").arg(readerError);
             db.close();
+            completeBenchmark(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -667,6 +717,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                 result.cancelled = true;
                 result.message = QStringLiteral("Internal signature carving cancelled.");
                 db.close();
+                completeBenchmark(QStringLiteral("Cancelled"), result.message);
                 return result;
             }
             ++processedRanges;
@@ -676,12 +727,13 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
             const QString rangeRecoveryDir = QDir(recoveryDir).filePath(name);
             QDir().mkpath(rangeRecoveryDir);
 
-            progress(rangeProgress(0, 35, processedRanges, int(ranges.size()), 0.0), QStringLiteral("Building %1 carving image...").arg(name));
-            if (!buildLogicalImage(range, logicalImage, processedRanges, int(ranges.size()), reader.get(), m_params.cancelRequested, progress, &errorMessage)) {
+            benchmarkProgress(rangeProgress(0, 35, processedRanges, int(ranges.size()), 0.0), QStringLiteral("Building %1 carving image...").arg(name));
+            if (!buildLogicalImage(range, logicalImage, processedRanges, int(ranges.size()), reader.get(), m_params.cancelRequested, benchmarkProgress, &errorMessage)) {
                 if (cancelled()) {
                     result.cancelled = true;
                     result.message = QStringLiteral("Internal signature carving cancelled.");
                     db.close();
+                    completeBenchmark(QStringLiteral("Cancelled"), result.message);
                     return result;
                 }
                 log(QStringLiteral("Carving image failed for %1: %2").arg(name, errorMessage));
@@ -696,6 +748,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                 insertCarvedRow(db, range, logicalImage, QFileInfo(), 0, 0, QStringLiteral("LogicalImageRead"), QStringLiteral("Logical image unavailable"), QStringLiteral("None"), QStringLiteral("Failed"), errorMessage, nullptr);
                 continue;
             }
+            benchmarkBytesWritten += quint64(qMax<qint64>(0, QFileInfo(logicalImage).size()));
 
             const qsizetype scanStride = (range.areaType == QStringLiteral("Primary") || range.areaType == QStringLiteral("Combined"))
                 ? 510
@@ -709,6 +762,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     result.cancelled = true;
                     result.message = QStringLiteral("Internal signature carving cancelled.");
                     db.close();
+                    completeBenchmark(QStringLiteral("Cancelled"), result.message);
                     return result;
                 }
                 ++windowNumber;
@@ -720,7 +774,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     break;
                 }
 
-                progress(rangeProgress(35, 95, processedRanges, int(ranges.size()), double(readOffset) / double(qMax<qint64>(1, logicalSize))),
+                benchmarkProgress(rangeProgress(35, 95, processedRanges, int(ranges.size()), double(readOffset) / double(qMax<qint64>(1, logicalSize))),
                     QStringLiteral("Scanning %1: window %2/%3, %4/%5 MiB")
                         .arg(name)
                         .arg(windowNumber)
@@ -734,6 +788,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     log(errorMessage);
                     break;
                 }
+                benchmarkBytesRead += quint64(bytesToRead);
 
                 log(QStringLiteral("Scanning window detail: range=%1 window=%2/%3 logical_offset=%4 bytes=%5 stride=%6 overlap=%7")
                     .arg(name)
@@ -745,6 +800,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     .arg(qMax<qint64>(0, bytesToRead - primaryBytes)));
                 QVector<CarvedFile> windowFiles;
                 const QVector<CarveCandidateInfo> candidates = carver.scan(windowData, scanStride, quint64(readOffset));
+                benchmarkItems += quint64(candidates.size());
                 log(QStringLiteral("Candidate index complete: range=%1 window=%2/%3 candidates=%4")
                     .arg(name)
                     .arg(windowNumber)
@@ -755,6 +811,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                         result.cancelled = true;
                         result.message = QStringLiteral("Internal signature carving cancelled.");
                         db.close();
+                        completeBenchmark(QStringLiteral("Cancelled"), result.message);
                         return result;
                     }
                     const qint64 candidateId = insertCandidateRow(db,
@@ -850,9 +907,10 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     result.cancelled = true;
                     result.message = QStringLiteral("Internal signature carving cancelled.");
                     db.close();
+                    completeBenchmark(QStringLiteral("Cancelled"), result.message);
                     return result;
                 }
-                progress(rangeProgress(95, 99, processedRanges, int(ranges.size()), carvedFiles.isEmpty() ? 1.0 : double(index) / double(carvedFiles.size())),
+                benchmarkProgress(rangeProgress(95, 99, processedRanges, int(ranges.size()), carvedFiles.isEmpty() ? 1.0 : double(index) / double(carvedFiles.size())),
                     QStringLiteral("Writing carved files for %1: %2/%3").arg(name).arg(index).arg(carvedFiles.size()));
                 const QString fileName = QStringLiteral("%1_%2_%3.%4")
                     .arg(name)
@@ -886,6 +944,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
                     continue;
                 }
                 recoveredFingerprints.insert(fingerprint);
+                benchmarkBytesWritten += quint64(fileInfo.size());
                 insertCarvedRow(db, range, logicalImage, fileInfo, carvedFile.logicalStart, carvedFile.logicalEnd, carvedFile.carvingMethod, carvedFile.validationResult, carvedFile.confidence, QStringLiteral("Recovered"), carvedFile.notes, nullptr);
                 updateCandidateRow(db,
                     carvedFile.candidateId,
@@ -911,6 +970,7 @@ FbinstCarvingWorker::Result FbinstCarvingWorker::run(const ProgressCallback &pro
         result.message = QStringLiteral("Internal signature carving complete. %1 files recovered from %2 ranges.").arg(recoveredCount).arg(ranges.size());
         db.close();
     }
-    progress(100, QStringLiteral("Internal signature carving complete"));
+    benchmarkProgress(100, QStringLiteral("Internal signature carving complete"));
+    completeBenchmark(result.ok ? QStringLiteral("Completed") : QStringLiteral("Failed"), result.message);
     return result;
 }

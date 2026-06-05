@@ -18,6 +18,9 @@
     <ClCompile Include="src\booticecarvingworker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\benchmarkrecorder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\fbinstcarvingworker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -42,6 +45,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\booticecarvingworker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\benchmarkrecorder.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\fbinstcarvingworker.h">

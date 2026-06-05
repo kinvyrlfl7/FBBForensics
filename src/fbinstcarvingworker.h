@@ -13,6 +13,7 @@ public:
     {
         QString sourcePath;
         QString fbinstDbPath;
+        QString benchmarkDbPath;
         QString outputDir;
         std::shared_ptr<std::atomic_bool> cancelRequested;
     };

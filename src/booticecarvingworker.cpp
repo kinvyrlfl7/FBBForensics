@@ -1,5 +1,6 @@
 #include "booticecarvingworker.h"
 
+#include "benchmarkrecorder.h"
 #include "imagereader.h"
 #include "signaturecarver.h"
 #include "showcaseanalyzer.h"
@@ -528,11 +529,27 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
 
     const QString connectionName = QStringLiteral("bootice_carving_worker_%1").arg(reinterpret_cast<quintptr>(this));
     SqlConnectionCleanup cleanup{connectionName};
+    BenchmarkRecorder benchmark(m_params.benchmarkDbPath);
+    benchmark.beginRun(BenchmarkRecorder::RunConfig{
+        QStringLiteral("Bootice FAT32 Remaining Carving"),
+        m_params.sourcePath,
+        QStringLiteral("Bootice"),
+        QStringLiteral("Carving"),
+        QStringLiteral("FAT32 deleted-entry exact recovery followed by free-cluster signature carving.")
+    });
+    auto benchmarkProgress = [&](const QString &stageName, int value, const QString &message) {
+        benchmark.sample(stageName, value, message);
+        progress(value, message);
+    };
     {
+        BenchmarkStageScope setupStage(&benchmark, QStringLiteral("Bootice Carving Setup"));
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
         db.setDatabaseName(m_params.booticeDbPath);
         if (!db.open()) {
             result.message = QStringLiteral("Unable to open bootice.db: %1").arg(db.lastError().text());
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
         QSqlQuery pragma(db);
@@ -542,18 +559,27 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
         if (!ensureCarvedTable(db, &errorMessage) || !ensureCandidateTable(db, &errorMessage)) {
             result.message = QStringLiteral("Unable to prepare Bootice_Carved_Files: %1").arg(errorMessage);
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
         QSqlQuery clear(db);
         if (!clear.exec(QStringLiteral("DELETE FROM Bootice_Carved_Files"))) {
             result.message = QStringLiteral("Unable to clear Bootice_Carved_Files: %1").arg(clear.lastError().text());
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
         QSqlQuery clearCandidates(db);
         if (!clearCandidates.exec(QStringLiteral("DELETE FROM Bootice_Carving_Candidates"))) {
             result.message = QStringLiteral("Unable to clear Bootice_Carving_Candidates: %1").arg(clearCandidates.lastError().text());
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -564,6 +590,9 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
             || !layoutQuery.next()) {
             result.message = QStringLiteral("Bootice FAT32 layout is missing.");
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -576,6 +605,9 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
         if (clusterBytes == 0) {
             result.message = QStringLiteral("Bootice FAT32 cluster size is invalid.");
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
 
@@ -586,6 +618,9 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                 "FROM Bootice_Remaining_Clusters ORDER BY Start_Cluster"))) {
             result.message = QStringLiteral("Unable to query Bootice_Remaining_Clusters: %1").arg(rangeQuery.lastError().text());
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
         while (rangeQuery.next()) {
@@ -618,6 +653,8 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
             result.ok = true;
             result.message = QStringLiteral("No remaining Bootice FAT32 clusters were found.");
             db.close();
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Completed"), result.message);
             return result;
         }
 
@@ -626,8 +663,12 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
         if (!reader || !reader->open(&readerError)) {
             result.message = QStringLiteral("Unable to open source image: %1").arg(readerError);
             db.close();
+            setupStage.setStatus(QStringLiteral("Failed"));
+            setupStage.setNotes(result.message);
+            benchmark.finishRun(QStringLiteral("Failed"), result.message);
             return result;
         }
+        setupStage.addItems(ranges.size());
 
         const QString baseDir = QDir(m_params.outputDir).filePath(QStringLiteral("bootice_carving"));
         const QString runName = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
@@ -644,60 +685,73 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
         int recoveredCount = 0;
         QList<BooticeCarveRange> deletedCoverage;
 
-        int deletedIndex = 0;
-        for (const DeletedBooticeEntry &entry : deletedEntries) {
-            if (cancelled()) {
-                result.cancelled = true;
-                result.message = QStringLiteral("Bootice FAT32 carving cancelled.");
-                db.close();
-                return result;
-            }
-            ++deletedIndex;
-            const quint64 clusterCount = (entry.fileSize + clusterBytes - 1ULL) / clusterBytes;
-            if (entry.startCluster < 2 || clusterCount == 0) {
-                continue;
-            }
-            const quint64 endCluster = entry.startCluster + clusterCount - 1ULL;
-            const quint64 startLba = layout.dataStartLba + (entry.startCluster - 2ULL) * layout.sectorsPerCluster;
-            const quint64 endLba = layout.dataStartLba + (endCluster - 1ULL) * layout.sectorsPerCluster - 1ULL;
-            const BooticeCarveRange entryRange{entry.startCluster, endCluster, startLba, endLba};
-            deletedCoverage.append(entryRange);
-            const QString deletedLogicalSource = QStringLiteral("FAT32DeletedEntry:%1").arg(entry.name);
-            const qint64 candidateId = insertCandidateRow(db,
-                entryRange,
-                deletedLogicalSource,
-                0,
-                QStringLiteral("FAT32DeletedEntry"),
-                QStringLiteral("FAT32 metadata"),
-                QFileInfo(entry.name).suffix().toLower(),
-                QStringLiteral("Deleted directory entry"),
-                QStringLiteral("Detected"),
-                QStringLiteral("FAT32 deleted directory entry queued for exact-size recovery"),
-                QStringLiteral("Start cluster and file size were recovered from the FAT32 directory entry."));
+        {
+            BenchmarkStageScope deletedStage(&benchmark, QStringLiteral("Bootice Deleted Entry Exact Recovery"));
+            int deletedIndex = 0;
+            quint64 bytesRead = 0;
+            quint64 bytesWritten = 0;
+            for (const DeletedBooticeEntry &entry : deletedEntries) {
+                if (cancelled()) {
+                    result.cancelled = true;
+                    result.message = QStringLiteral("Bootice FAT32 carving cancelled.");
+                    db.close();
+                    deletedStage.setStatus(QStringLiteral("Cancelled"));
+                    benchmark.finishRun(QStringLiteral("Cancelled"), result.message);
+                    return result;
+                }
+                ++deletedIndex;
+                const quint64 clusterCount = (entry.fileSize + clusterBytes - 1ULL) / clusterBytes;
+                if (entry.startCluster < 2 || clusterCount == 0) {
+                    continue;
+                }
+                const quint64 endCluster = entry.startCluster + clusterCount - 1ULL;
+                const quint64 startLba = layout.dataStartLba + (entry.startCluster - 2ULL) * layout.sectorsPerCluster;
+                const quint64 endLba = layout.dataStartLba + (endCluster - 1ULL) * layout.sectorsPerCluster - 1ULL;
+                const BooticeCarveRange entryRange{entry.startCluster, endCluster, startLba, endLba};
+                deletedCoverage.append(entryRange);
+                const QString deletedLogicalSource = QStringLiteral("FAT32DeletedEntry:%1").arg(entry.name);
+                const qint64 candidateId = insertCandidateRow(db,
+                    entryRange,
+                    deletedLogicalSource,
+                    0,
+                    QStringLiteral("FAT32DeletedEntry"),
+                    QStringLiteral("FAT32 metadata"),
+                    QFileInfo(entry.name).suffix().toLower(),
+                    QStringLiteral("Deleted directory entry"),
+                    QStringLiteral("Detected"),
+                    QStringLiteral("FAT32 deleted directory entry queued for exact-size recovery"),
+                    QStringLiteral("Start cluster and file size were recovered from the FAT32 directory entry."));
 
-            progress(rangeProgress(0, 15, deletedIndex, qMax(1, deletedEntries.size()), 0.0),
-                QStringLiteral("Recovering Bootice deleted file %1/%2: %3")
-                    .arg(deletedIndex)
-                    .arg(deletedEntries.size())
-                    .arg(entry.name));
-            const QString outputPath = uniqueOutputPath(deletedRecoveryDir, entry.name);
-            const quint64 physicalStart = startLba * layout.bytesPerSector;
-            if (!copySourceRangeToFile(*reader, physicalStart, entry.fileSize, outputPath, m_params.cancelRequested, &errorMessage)) {
-                const qint64 carvedId = insertCarvedRow(db, entryRange, deletedLogicalSource, QFileInfo(), 0, entry.fileSize > 0 ? entry.fileSize - 1ULL : 0, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("Source read/write failed"), QStringLiteral("None"), QStringLiteral("Failed"), errorMessage, nullptr);
-                updateCandidateRow(db, candidateId, QStringLiteral("Failed"), QStringLiteral("Source read/write failed"), carvedId, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), errorMessage, errorMessage);
-                continue;
+                benchmarkProgress(QStringLiteral("Bootice Deleted Entry Exact Recovery"),
+                    rangeProgress(0, 15, deletedIndex, qMax(1, deletedEntries.size()), 0.0),
+                    QStringLiteral("Recovering Bootice deleted file %1/%2: %3")
+                        .arg(deletedIndex)
+                        .arg(deletedEntries.size())
+                        .arg(entry.name));
+                const QString outputPath = uniqueOutputPath(deletedRecoveryDir, entry.name);
+                const quint64 physicalStart = startLba * layout.bytesPerSector;
+                if (!copySourceRangeToFile(*reader, physicalStart, entry.fileSize, outputPath, m_params.cancelRequested, &errorMessage)) {
+                    const qint64 carvedId = insertCarvedRow(db, entryRange, deletedLogicalSource, QFileInfo(), 0, entry.fileSize > 0 ? entry.fileSize - 1ULL : 0, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("Source read/write failed"), QStringLiteral("None"), QStringLiteral("Failed"), errorMessage, nullptr);
+                    updateCandidateRow(db, candidateId, QStringLiteral("Failed"), QStringLiteral("Source read/write failed"), carvedId, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), errorMessage, errorMessage);
+                    continue;
+                }
+                bytesRead += entry.fileSize;
+                bytesWritten += entry.fileSize;
+                const QFileInfo fileInfo = normalizeRecoveredExtension(outputPath, qMin<quint64>(entry.fileSize, 2ULL * 1024ULL * 1024ULL));
+                const QString fingerprint = QStringLiteral("%1:%2").arg(fileInfo.size()).arg(sha256ForFile(fileInfo.absoluteFilePath()));
+                if (recoveredFingerprints.contains(fingerprint)) {
+                    QFile::remove(fileInfo.absoluteFilePath());
+                    updateCandidateRow(db, candidateId, QStringLiteral("DuplicateSkipped"), QStringLiteral("Duplicate recovered file"), -1, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), QString(), QStringLiteral("Skipped duplicate recovered file with identical size and SHA-256."));
+                    continue;
+                }
+                recoveredFingerprints.insert(fingerprint);
+                const qint64 carvedId = insertCarvedRow(db, entryRange, deletedLogicalSource, fileInfo, 0, entry.fileSize > 0 ? entry.fileSize - 1ULL : 0, QStringLiteral("FAT32DeletedEntry+ExactSize"), QStringLiteral("Recovered by deleted FAT32 directory entry start cluster and file size"), QStringLiteral("High"), QStringLiteral("Recovered"), QStringLiteral("Exact-size deleted-entry recovery performed before remaining-cluster carving."), nullptr);
+                updateCandidateRow(db, candidateId, QStringLiteral("Recovered"), QStringLiteral("Recovered by FAT32 deleted directory entry"), carvedId, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), QString(), QStringLiteral("Extracted to %1").arg(fileInfo.absoluteFilePath()));
+                ++recoveredCount;
             }
-            const QFileInfo fileInfo = normalizeRecoveredExtension(outputPath, qMin<quint64>(entry.fileSize, 2ULL * 1024ULL * 1024ULL));
-            const QString fingerprint = QStringLiteral("%1:%2").arg(fileInfo.size()).arg(sha256ForFile(fileInfo.absoluteFilePath()));
-            if (recoveredFingerprints.contains(fingerprint)) {
-                QFile::remove(fileInfo.absoluteFilePath());
-                updateCandidateRow(db, candidateId, QStringLiteral("DuplicateSkipped"), QStringLiteral("Duplicate recovered file"), -1, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), QString(), QStringLiteral("Skipped duplicate recovered file with identical size and SHA-256."));
-                continue;
-            }
-            recoveredFingerprints.insert(fingerprint);
-            const qint64 carvedId = insertCarvedRow(db, entryRange, deletedLogicalSource, fileInfo, 0, entry.fileSize > 0 ? entry.fileSize - 1ULL : 0, QStringLiteral("FAT32DeletedEntry+ExactSize"), QStringLiteral("Recovered by deleted FAT32 directory entry start cluster and file size"), QStringLiteral("High"), QStringLiteral("Recovered"), QStringLiteral("Exact-size deleted-entry recovery performed before remaining-cluster carving."), nullptr);
-            updateCandidateRow(db, candidateId, QStringLiteral("Recovered"), QStringLiteral("Recovered by FAT32 deleted directory entry"), carvedId, QStringLiteral("FAT32DeletedEntry"), QStringLiteral("FAT32DeletedEntry+ExactSize"), QString(), QStringLiteral("Extracted to %1").arg(fileInfo.absoluteFilePath()));
-            ++recoveredCount;
+            deletedStage.addBytesRead(bytesRead);
+            deletedStage.addBytesWritten(bytesWritten);
+            deletedStage.addItems(deletedEntries.size());
         }
 
         ranges = subtractCoveredClusters(ranges, deletedCoverage);
@@ -705,11 +759,18 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
 
         int processedRanges = 0;
 
+        {
+        BenchmarkStageScope remainingStage(&benchmark, QStringLiteral("Bootice Remaining Free-Cluster Carving"));
+        quint64 remainingBytesRead = 0;
+        quint64 remainingBytesWritten = 0;
+        quint64 candidatesProcessed = 0;
         for (const BooticeCarveRange &range : ranges) {
             if (cancelled()) {
                 result.cancelled = true;
                 result.message = QStringLiteral("Bootice FAT32 carving cancelled.");
                 db.close();
+                remainingStage.setStatus(QStringLiteral("Cancelled"));
+                benchmark.finishRun(QStringLiteral("Cancelled"), result.message);
                 return result;
             }
 
@@ -733,12 +794,16 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                     result.cancelled = true;
                     result.message = QStringLiteral("Bootice FAT32 carving cancelled.");
                     db.close();
+                    remainingStage.setStatus(QStringLiteral("Cancelled"));
+                    remainingStage.setNotes(result.message);
+                    benchmark.finishRun(QStringLiteral("Cancelled"), result.message);
                     return result;
                 }
                 ++windowNumber;
                 const quint64 primaryBytes = qMin<quint64>(quint64(CarvingScanWindowBytes), rangeBytes - readOffset);
                 const quint64 bytesToRead = qMin<quint64>(primaryBytes + quint64(CarvingScanOverlapBytes), rangeBytes - readOffset);
-                progress(rangeProgress(0, 95, processedRanges, ranges.size(), rangeBytes == 0 ? 1.0 : double(readOffset) / double(rangeBytes)),
+                benchmarkProgress(QStringLiteral("Bootice Remaining Free-Cluster Carving"),
+                    rangeProgress(0, 95, processedRanges, ranges.size(), rangeBytes == 0 ? 1.0 : double(readOffset) / double(rangeBytes)),
                     QStringLiteral("Bootice carving %1: window %2/%3, %4/%5 MiB")
                         .arg(name)
                         .arg(windowNumber)
@@ -751,8 +816,10 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                     log(QStringLiteral("Bootice range read failed for %1 at logical offset %2: %3").arg(name).arg(readOffset).arg(errorMessage));
                     break;
                 }
+                remainingBytesRead += bytesToRead;
 
                 const QVector<CarveCandidateInfo> candidates = carver.scan(windowData, qsizetype(clusterBytes), readOffset);
+                candidatesProcessed += candidates.size();
                 log(QStringLiteral("Bootice candidate scan: range=%1 window=%2/%3 candidates=%4 stride=%5 bytes")
                     .arg(name)
                     .arg(windowNumber)
@@ -803,6 +870,9 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                     result.cancelled = true;
                     result.message = QStringLiteral("Bootice FAT32 carving cancelled.");
                     db.close();
+                    remainingStage.setStatus(QStringLiteral("Cancelled"));
+                    remainingStage.setNotes(result.message);
+                    benchmark.finishRun(QStringLiteral("Cancelled"), result.message);
                     return result;
                 }
                 const quint64 fileSize = carvedFile.logicalEnd >= carvedFile.logicalStart
@@ -811,7 +881,8 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                 if (fileSize == 0) {
                     continue;
                 }
-                progress(rangeProgress(95, 99, processedRanges, ranges.size(), carvedFiles.isEmpty() ? 1.0 : double(fileIndex) / double(carvedFiles.size())),
+                benchmarkProgress(QStringLiteral("Bootice Remaining Free-Cluster Carving"),
+                    rangeProgress(95, 99, processedRanges, ranges.size(), carvedFiles.isEmpty() ? 1.0 : double(fileIndex) / double(carvedFiles.size())),
                     QStringLiteral("Writing Bootice carved files for %1: %2/%3").arg(name).arg(fileIndex).arg(carvedFiles.size()));
                 const QString fileName = QStringLiteral("%1_%2_%3.%4")
                     .arg(name)
@@ -833,6 +904,7 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
                     continue;
                 }
                 recoveredFingerprints.insert(fingerprint);
+                remainingBytesWritten += quint64(fileInfo.size());
                 const QString logicalSource = QStringLiteral("BooticeRange:%1").arg(name);
                 const qint64 carvedId = insertCarvedRow(db, range, logicalSource, fileInfo, carvedFile.logicalStart, carvedFile.logicalEnd, carvedFile.carvingMethod, carvedFile.validationResult, carvedFile.confidence, QStringLiteral("Recovered"), carvedFile.notes, nullptr);
                 updateCandidateRow(db, carvedFile.candidateId, QStringLiteral("Recovered"), carvedFile.validationResult, carvedId, carvedFile.attemptedMethods, carvedFile.selectedMethod, QString(), QStringLiteral("Extracted to %1").arg(fileInfo.absoluteFilePath()));
@@ -845,6 +917,10 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
             }
             log(QStringLiteral("Bootice carving completed for %1: %2 files recovered.").arg(name).arg(rangeRecovered));
         }
+        remainingStage.addBytesRead(remainingBytesRead);
+        remainingStage.addBytesWritten(remainingBytesWritten);
+        remainingStage.addItems(candidatesProcessed);
+        }
 
         reader->close();
         result.ok = true;
@@ -852,6 +928,7 @@ BooticeCarvingWorker::Result BooticeCarvingWorker::run(const ProgressCallback &p
         result.message = QStringLiteral("Bootice FAT32 carving complete. %1 files recovered from %2 free-cluster ranges.").arg(recoveredCount).arg(ranges.size());
         db.close();
     }
-    progress(100, QStringLiteral("Bootice FAT32 carving complete"));
+    benchmarkProgress(QStringLiteral("Bootice FAT32 Carving"), 100, QStringLiteral("Bootice FAT32 carving complete"));
+    benchmark.finishRun(result.ok ? QStringLiteral("Completed") : QStringLiteral("Failed"), result.message);
     return result;
 }

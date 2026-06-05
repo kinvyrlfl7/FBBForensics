@@ -66,7 +66,7 @@
       <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(TskDebugLibraryDir);$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\x64\Debug_NoLibs;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Debug;$(ProjectDir)third-party\bzip2\lib\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Cored.lib;Qt6Guid.lib;Qt6Sqld.lib;Qt6Widgetsd.lib;libtsk.lib;libewf.lib;zlibd.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Qt6Cored.lib;Qt6Guid.lib;Qt6Sqld.lib;Qt6Widgetsd.lib;libtsk.lib;libewf.lib;zlibd.lib;libbz2.lib;Shell32.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(QtInstallDir)\bin\Qt6Cored.dll" copy /Y "$(QtInstallDir)\bin\Qt6Cored.dll" "$(OutDir)"
@@ -107,7 +107,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.201
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(TskLibraryDir);$(QtInstallDir)\lib;$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.20130416.0.0\build\native\msvscpp\x64\Release;$(ProjectDir)third-party\sleuthkit\win32\packages\zlib_native.1.2.11\build\native\lib\x64\Release;$(ProjectDir)third-party\bzip2\lib\x64\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;libewf.lib;zlib.lib;libbz2.lib;Shell32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Qt6Core.lib;Qt6Gui.lib;Qt6Sql.lib;Qt6Widgets.lib;libtsk.lib;libewf.lib;zlib.lib;libbz2.lib;Shell32.lib;Psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(QtInstallDir)\bin\Qt6Core.dll" copy /Y "$(QtInstallDir)\bin\Qt6Core.dll" "$(OutDir)"
@@ -129,6 +129,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.201
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\booticecarvingworker.cpp" />
+    <ClCompile Include="src\benchmarkrecorder.cpp" />
     <ClCompile Include="src\fbinstcarvingworker.cpp" />
     <ClCompile Include="src\imagereader.cpp" />
     <ClCompile Include="src\main.cpp" />
@@ -139,6 +140,7 @@ if exist "$(ProjectDir)third-party\sleuthkit\win32\packages\sleuthkit-libewf.201
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\booticecarvingworker.h" />
+    <ClInclude Include="src\benchmarkrecorder.h" />
     <ClInclude Include="src\fbinstcarvingworker.h" />
     <ClInclude Include="src\imagereader.h" />
     <ClInclude Include="src\rawdevice.h" />
