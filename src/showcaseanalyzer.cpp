@@ -71,6 +71,13 @@ QString formatPartitionSize(quint64 bytes)
         .arg(double(bytes) / BytesPerGb, 0, 'f', 2);
 }
 
+QString formatHexDecimal(quint64 value, int minimumHexWidth = 4)
+{
+    return QStringLiteral("0x%1(%2)")
+        .arg(value, minimumHexWidth, 16, QLatin1Char('0'))
+        .arg(value);
+}
+
 bool isZeroGuid(const QByteArray &data, int offset)
 {
     for (int index = 0; index < 16; ++index) {
@@ -359,14 +366,15 @@ bool ShowcaseAnalyzer::createBooticeTables(QSqlDatabase &database, QString *erro
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS Bootice ("
             "Type TEXT,"
-            "Start_LBA_Address INTEGER,"
-            "Total_Sector_Count INTEGER,"
-            "Partition_Size INTEGER)"),
+            "Start_LBA_Address TEXT,"
+            "Start_LBA_Offset TEXT,"
+            "Total_Sector_Count TEXT,"
+            "Partition_Size TEXT)"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS Bootice_List ("
             "Name TEXT,"
             "Type TEXT,"
-            "Size INTEGER,"
+            "Size TEXT,"
             "Create_Date TEXT,"
             "Modify_Date TEXT)"),
         QStringLiteral(
@@ -476,8 +484,9 @@ bool ShowcaseAnalyzer::createFbinstTables(QSqlDatabase &database, QString *error
             "CREATE TABLE IF NOT EXISTS Fbinst_List ("
             "File_Names TEXT,"
             "Type_Of_DataArea TEXT,"
-            "File_Start INTEGER,"
-            "File_Size INTEGER,"
+            "File_Start_Sector TEXT,"
+            "File_Start_Offset TEXT,"
+            "File_Size TEXT,"
             "Modified_Time TEXT)"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS Fbinst_Sectors ("
@@ -717,11 +726,12 @@ bool ShowcaseAnalyzer::analyzeUltraIso(QSqlDatabase &partitionDb, QSqlDatabase &
     }
 
     QSqlQuery insert(booticeDb);
-    insert.prepare(QStringLiteral("INSERT INTO Bootice(Type, Start_LBA_Address, Total_Sector_Count, Partition_Size) VALUES(?, ?, ?, ?)"));
+    insert.prepare(QStringLiteral("INSERT INTO Bootice(Type, Start_LBA_Address, Start_LBA_Offset, Total_Sector_Count, Partition_Size) VALUES(?, ?, ?, ?, ?)"));
     insert.addBindValue(partitionTypeToString(partitionType));
-    insert.addBindValue(startLba);
-    insert.addBindValue(sectorCount);
-    insert.addBindValue(size);
+    insert.addBindValue(formatHexDecimal(startLba, 8));
+    insert.addBindValue(formatHexDecimal(quint64(startLba) * SectorSize, 8));
+    insert.addBindValue(formatHexDecimal(sectorCount, 8));
+    insert.addBindValue(formatHexDecimal(size, 8));
     if (!execQuery(insert, errorMessage)) {
         return false;
     }
@@ -1073,11 +1083,12 @@ bool ShowcaseAnalyzer::analyzeFbinstFileList(ImageReader &reader, quint16 fbinst
         }
 
         QSqlQuery insert(fbinstDb);
-        insert.prepare(QStringLiteral("INSERT INTO Fbinst_List(File_Names, Type_Of_DataArea, File_Start, File_Size, Modified_Time) VALUES(?, ?, ?, ?, ?)"));
+        insert.prepare(QStringLiteral("INSERT INTO Fbinst_List(File_Names, Type_Of_DataArea, File_Start_Sector, File_Start_Offset, File_Size, Modified_Time) VALUES(?, ?, ?, ?, ?, ?)"));
         insert.addBindValue(QString::fromLatin1(nameBytes));
         insert.addBindValue(dataAreaToString(areaType));
-        insert.addBindValue(fileStart);
-        insert.addBindValue(fileSize);
+        insert.addBindValue(formatHexDecimal(fileStart, 8));
+        insert.addBindValue(formatHexDecimal(quint64(fileStart) * SectorSize, 8));
+        insert.addBindValue(formatHexDecimal(fileSize, 8));
         insert.addBindValue(formatUnixTime(modifiedTime));
         if (!execQuery(insert, errorMessage)) {
             return false;
@@ -1654,7 +1665,7 @@ bool ShowcaseAnalyzer::enumerateBooticeRoot(quint64 startLba, QSqlDatabase &boot
         insert.prepare(QStringLiteral("INSERT INTO Bootice_List(Name, Type, Size, Create_Date, Modify_Date) VALUES(?, ?, ?, ?, ?)"));
         insert.addBindValue(QString::fromUtf8(name));
         insert.addBindValue(entry->meta->type == TSK_FS_META_TYPE_DIR ? QStringLiteral("DIR") : QStringLiteral("FILE"));
-        insert.addBindValue(quint64(entry->meta->size));
+        insert.addBindValue(formatHexDecimal(quint64(entry->meta->size), 8));
         insert.addBindValue(formatUnixTime(static_cast<quint32>(entry->meta->crtime)));
         insert.addBindValue(formatUnixTime(static_cast<quint32>(entry->meta->mtime)));
         if (!execQuery(insert, errorMessage)) {

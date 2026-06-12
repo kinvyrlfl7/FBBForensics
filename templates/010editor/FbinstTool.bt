@@ -1,0 +1,174 @@
+//------------------------------------------------
+// FBBForensics - FbinstTool Binary Template
+// Target: 010 Editor
+//
+// Apply this template to a raw disk image or physical disk view whose
+// logical sector 0 is the same sector inspected by FBBForensics.
+// Compressed E01 containers must be mounted/exported as raw first unless
+// your 010 Editor setup exposes the decompressed disk stream.
+//------------------------------------------------
+
+LittleEndian();
+
+const uint64 SECTOR_SIZE        = 512;
+const uint64 FBINST_SUBMBR_LBA  = 64;
+const uint64 FBINST_FILELIST_LBA = 68;
+const uint   FBINST_FILELIST_BYTES_PER_SECTOR = 510;
+
+typedef struct
+{
+    ubyte  BootCode[436];
+    char   FbinstSignature[4];
+    ubyte  Tail[70];
+    ushort BootSignature;
+} MBR_FbinstProbe;
+
+typedef struct
+{
+    ubyte  Prefix[4];
+    ushort RawVersion;
+    ushort ListUsedSectors;
+    ushort ListSizeSectors;
+    ushort PrimarySizeSectors;
+    uint   ExtendedSizeSectors;
+    ubyte  Reserved[496];
+} FBINST_SubMBR;
+
+typedef struct
+{
+    ubyte Data[510];
+    ushort SectorNumber;
+} FBINST_FileListSector;
+
+typedef struct
+{
+    ubyte  EntryMarker;
+    ubyte  DataAreaType;       // 0 = Primary, 1 = Extended
+    uint   FileStartSector;
+    uint   FileSizeBytes;
+    uint   ModifiedTime32;
+    char   FileName[];
+} FBINST_FileEntry_V16;
+
+typedef struct
+{
+    ubyte  EntryMarker;
+    ubyte  DataAreaType;       // 0 = Primary, 1 = Extended
+    uint   FileStartSector;
+    uint   FileSizeBytes;
+    uint64 ModifiedTime64;
+    char   FileName[];
+} FBINST_FileEntry_V17;
+
+uint64 FbinstFileListPhysicalOffset(uint64 logicalOffset)
+{
+    return (FBINST_FILELIST_LBA + (logicalOffset / FBINST_FILELIST_BYTES_PER_SECTOR)) * SECTOR_SIZE
+        + (logicalOffset % FBINST_FILELIST_BYTES_PER_SECTOR);
+}
+
+uint64 FbinstEntryLogicalSize(uint64 logicalOffset, uint64 maxLogical, int has64BitModifiedTime)
+{
+    local uint64 headerSize = has64BitModifiedTime ? 18 : 14;
+    local uint64 cursor = logicalOffset + headerSize;
+
+    while (cursor < maxLogical)
+    {
+        if (ReadUByte(FbinstFileListPhysicalOffset(cursor)) == 0)
+        {
+            return cursor - logicalOffset + 1;
+        }
+        cursor++;
+    }
+    return maxLogical - logicalOffset;
+}
+
+string FormatFbinstVersion(ushort rawVersion)
+{
+    local uint major = rawVersion & 0x00ff;
+    local uint minor = (rawVersion >> 8) & 0x00ff;
+    return Str("%u.%u", major, minor);
+}
+
+string FbinstAreaName(ubyte value)
+{
+    if (value == 0)
+        return "Primary";
+    if (value == 1)
+        return "Extended";
+    return "Invalid";
+}
+
+FSeek(0);
+MBR_FbinstProbe MBR;
+
+if (ReadString(436, 4) != "FBBF")
+{
+    Warning("FbinstTool signature FBBF was not found at sector 0 offset 436.");
+}
+if (MBR.BootSignature != 0xaa55)
+{
+    Warning("MBR boot signature is not 0xAA55.");
+}
+
+FSeek(FBINST_SUBMBR_LBA * SECTOR_SIZE);
+FBINST_SubMBR SubMBR;
+
+local uint gVersionMajor = SubMBR.RawVersion & 0x00ff;
+local uint gVersionMinor = (SubMBR.RawVersion >> 8) & 0x00ff;
+local int gHas64BitModifiedTime = (gVersionMajor > 1) || (gVersionMajor == 1 && gVersionMinor >= 7);
+local uint64 gPrimaryDataStartSector = FBINST_FILELIST_LBA + SubMBR.ListSizeSectors;
+local uint64 gPrimaryLastSector = SubMBR.PrimarySizeSectors > 0 ? SubMBR.PrimarySizeSectors - 1 : 0;
+local uint64 gExtendedStartSector = SubMBR.PrimarySizeSectors;
+local uint64 gExtendedLastSector = SubMBR.ExtendedSizeSectors > 0
+    ? (uint64)SubMBR.PrimarySizeSectors + SubMBR.ExtendedSizeSectors - 1
+    : gExtendedStartSector;
+local uint64 gFileListLogicalSize = (uint64)SubMBR.ListUsedSectors * FBINST_FILELIST_BYTES_PER_SECTOR;
+
+Printf("FbinstTool raw version: 0x%04x, formatted: %s\n", SubMBR.RawVersion, FormatFbinstVersion(SubMBR.RawVersion));
+Printf("File_List: used=%u sectors, reserved=%u sectors, logical bytes=%Lu\n",
+    SubMBR.ListUsedSectors, SubMBR.ListSizeSectors, gFileListLogicalSize);
+Printf("Primary data sector range: %Lu - %Lu; Extended sector range: %Lu - %Lu\n",
+    gPrimaryDataStartSector, gPrimaryLastSector, gExtendedStartSector, gExtendedLastSector);
+Printf("File_List entry strategy: %s modified time, fixed header=%u bytes\n",
+    gHas64BitModifiedTime ? "64-bit" : "32-bit",
+    gHas64BitModifiedTime ? 18 : 14);
+
+FSeek(FBINST_FILELIST_LBA * SECTOR_SIZE);
+FBINST_FileListSector FileListSectors[SubMBR.ListUsedSectors] <optimize=false>;
+
+local uint64 logicalOffset = 0;
+local uint entryIndex = 0;
+while (logicalOffset < gFileListLogicalSize)
+{
+    local uint64 physicalOffset = FbinstFileListPhysicalOffset(logicalOffset);
+    if (ReadUByte(physicalOffset) == 0)
+        break;
+
+    if ((logicalOffset % FBINST_FILELIST_BYTES_PER_SECTOR) > (FBINST_FILELIST_BYTES_PER_SECTOR - (gHas64BitModifiedTime ? 18 : 14)))
+    {
+        Printf("Warning: File_List entry %u starts near a sector trailer at logical offset %Lu. Tree fields may cross the 2-byte sector-number trailer.\n",
+            entryIndex, logicalOffset);
+    }
+
+    FSeek(physicalOffset);
+    if (gHas64BitModifiedTime)
+    {
+        FBINST_FileEntry_V17 Entry <name=Str("FileEntry_%04u_v1_7_plus", entryIndex), optimize=false>;
+        Printf("Entry %u: area=%s start=%u size=%u name=%s\n",
+            entryIndex, FbinstAreaName(Entry.DataAreaType), Entry.FileStartSector, Entry.FileSizeBytes, Entry.FileName);
+    }
+    else
+    {
+        FBINST_FileEntry_V16 Entry <name=Str("FileEntry_%04u_v1_6", entryIndex), optimize=false>;
+        Printf("Entry %u: area=%s start=%u size=%u name=%s\n",
+            entryIndex, FbinstAreaName(Entry.DataAreaType), Entry.FileStartSector, Entry.FileSizeBytes, Entry.FileName);
+    }
+
+    logicalOffset += FbinstEntryLogicalSize(logicalOffset, gFileListLogicalSize, gHas64BitModifiedTime);
+    entryIndex++;
+}
+
+if (entryIndex == 0)
+{
+    Warning("No FbinstTool File_List entries were decoded.");
+}

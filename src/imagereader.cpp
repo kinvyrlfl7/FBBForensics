@@ -1,5 +1,6 @@
 #include "imagereader.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <libewf.h>
@@ -296,13 +297,14 @@ public:
         close();
 
         libewf_error_t *error = nullptr;
-        const QByteArray utf8Path = m_sourcePath.toUtf8();
+        const QString nativePath = QDir::toNativeSeparators(QFileInfo(m_sourcePath).absoluteFilePath());
+        const QByteArray nativePathBytes = nativePath.toLocal8Bit();
         libewf_set_codepage(0, nullptr);
-        if (libewf_glob(utf8Path.constData(), static_cast<size_t>(utf8Path.size()), LIBEWF_FORMAT_UNKNOWN, &m_filenames, &m_numberOfFilenames, &error) != 1
+        if (libewf_glob(nativePathBytes.constData(), static_cast<size_t>(nativePathBytes.size()), LIBEWF_FORMAT_UNKNOWN, &m_filenames, &m_numberOfFilenames, &error) != 1
             || m_numberOfFilenames <= 0) {
             if (errorMessage) {
-                *errorMessage = QStringLiteral("libewf could not locate E01 segment files for %1. %2")
-                    .arg(m_sourcePath, takeLibewfError(&error));
+                *errorMessage = QStringLiteral("libewf could not locate E01 segment files for %1 (native path: %2). %3")
+                    .arg(m_sourcePath, nativePath, takeLibewfError(&error));
             } else {
                 takeLibewfError(&error);
             }

@@ -1,0 +1,192 @@
+//------------------------------------------------
+// FBBForensics - Bootice / EasyBoot Binary Template
+// Target: 010 Editor
+//
+// Apply this template to a raw disk image or physical disk view whose
+// logical sector 0 is the same sector inspected by FBBForensics.
+// Compressed E01 containers must be mounted/exported as raw first unless
+// your 010 Editor setup exposes the decompressed disk stream.
+//------------------------------------------------
+
+LittleEndian();
+
+const uint64 SECTOR_SIZE = 512;
+const uint64 BOOTICE_METADATA_LBA = 96;
+const uint64 BOOTICE_SIGNATURE_LBA = 99;
+
+typedef struct
+{
+    ubyte  Prefix[71];
+    char   BooticeCandidateSignature[4];   // -ELM in sector 0 for candidate detection
+    ubyte  Middle[435];
+    ushort BootSignature;
+} MBR_BooticeProbe;
+
+typedef struct
+{
+    ubyte  Prefix[498];
+    ubyte  PartitionType;
+    ubyte  Reserved499[3];
+    uint   StartLBA;
+    uint   SectorCount;
+    ushort BootSignature;
+} BOOTICE_Sector96Metadata;
+
+typedef struct
+{
+    ubyte Prefix[71];
+    char  BooticeSignature[4];             // -ELM
+    ubyte Middle[405];
+    char  EasyBootSignature[4];            // -ELC when EasyBoot deep hidden metadata is present
+    ubyte Tail[28];
+} BOOTICE_Sector99Signatures;
+
+typedef struct
+{
+    ubyte  Jump[3];
+    char   OemName[8];
+    ushort BytesPerSector;
+    ubyte  SectorsPerCluster;
+    ushort ReservedSectors;
+    ubyte  FatCount;
+    ushort RootEntryCount;
+    ushort TotalSectors16;
+    ubyte  MediaDescriptor;
+    ushort FatSize16;
+    ushort SectorsPerTrack;
+    ushort HeadCount;
+    uint   HiddenSectors;
+    uint   TotalSectors32;
+    uint   FatSize32;
+    ushort ExtFlags;
+    ushort FsVersion;
+    uint   RootCluster;
+    ushort FsInfoSector;
+    ushort BackupBootSector;
+    ubyte  Reserved[12];
+    ubyte  DriveNumber;
+    ubyte  Reserved1;
+    ubyte  BootSignatureExt;
+    uint   VolumeId;
+    char   VolumeLabel[11];
+    char   FileSystemType[8];
+    ubyte  BootCode[420];
+    ushort BootSignature;
+} FAT32_BootSector;
+
+typedef struct
+{
+    char  Name[8];
+    char  Extension[3];
+    ubyte Attributes;
+    ubyte NtReserved;
+    ubyte CreateTimeTenth;
+    ushort CreateTime;
+    ushort CreateDate;
+    ushort AccessDate;
+    ushort FirstClusterHigh;
+    ushort WriteTime;
+    ushort WriteDate;
+    ushort FirstClusterLow;
+    uint   FileSize;
+} FAT_DirectoryEntry;
+
+string PartitionTypeName(ubyte type)
+{
+    if (type == 0x00) return "Empty";
+    if (type == 0x0b) return "FAT32 CHS";
+    if (type == 0x0c) return "FAT32 LBA";
+    if (type == 0x0e) return "FAT16 LBA";
+    if (type == 0x07) return "NTFS/exFAT";
+    return Str("Unknown 0x%02x", type);
+}
+
+uint64 Fat32TotalSectors(FAT32_BootSector &bpb)
+{
+    return bpb.TotalSectors16 != 0 ? bpb.TotalSectors16 : bpb.TotalSectors32;
+}
+
+uint Fat32FatSizeSectors(FAT32_BootSector &bpb)
+{
+    return bpb.FatSize16 != 0 ? bpb.FatSize16 : bpb.FatSize32;
+}
+
+uint FatDirectoryStartCluster(FAT_DirectoryEntry &entry)
+{
+    return ((uint)entry.FirstClusterHigh << 16) | entry.FirstClusterLow;
+}
+
+FSeek(0);
+MBR_BooticeProbe MBR;
+
+if (ReadString(71, 4) != "-ELM")
+{
+    Warning("Bootice/EasyBoot candidate signature -ELM was not found at sector 0 offset 71.");
+}
+if (MBR.BootSignature != 0xaa55)
+{
+    Warning("MBR boot signature is not 0xAA55.");
+}
+
+FSeek(BOOTICE_METADATA_LBA * SECTOR_SIZE);
+BOOTICE_Sector96Metadata Sector96;
+
+Printf("Bootice sector 96: partition=%s, start LBA=%u, sectors=%u, bytes=%Lu\n",
+    PartitionTypeName(Sector96.PartitionType), Sector96.StartLBA, Sector96.SectorCount,
+    (uint64)Sector96.SectorCount * SECTOR_SIZE);
+
+if (Sector96.PartitionType == 0 || Sector96.StartLBA == 0 || Sector96.SectorCount == 0)
+{
+    Warning("Bootice sector 96 partition metadata is empty or invalid.");
+}
+
+FSeek(BOOTICE_SIGNATURE_LBA * SECTOR_SIZE);
+BOOTICE_Sector99Signatures Sector99;
+
+if (ReadString(BOOTICE_SIGNATURE_LBA * SECTOR_SIZE + 71, 4) != "-ELM"
+    && ReadString(BOOTICE_SIGNATURE_LBA * SECTOR_SIZE + 480, 4) != "-ELC")
+{
+    Warning("Sector 99 does not contain expected -ELM or -ELC follow-up signature.");
+}
+
+local uint64 hiddenVolumeOffset = (uint64)Sector96.StartLBA * SECTOR_SIZE;
+FSeek(hiddenVolumeOffset);
+FAT32_BootSector HiddenFAT32;
+
+if (HiddenFAT32.BootSignature != 0xaa55)
+{
+    Warning("Bootice hidden volume does not contain a valid FAT boot-sector signature.");
+}
+
+local uint64 hiddenVolumeSectors = Fat32TotalSectors(HiddenFAT32);
+if (hiddenVolumeSectors == 0 || hiddenVolumeSectors > Sector96.SectorCount)
+    hiddenVolumeSectors = Sector96.SectorCount;
+
+local uint fatSizeSectors = Fat32FatSizeSectors(HiddenFAT32);
+local uint64 fatStartLBA = (uint64)Sector96.StartLBA + HiddenFAT32.ReservedSectors;
+local uint64 dataStartLBA = fatStartLBA + (uint64)HiddenFAT32.FatCount * fatSizeSectors;
+local uint64 dataStartRelative = dataStartLBA - Sector96.StartLBA;
+local uint64 clusterCount = HiddenFAT32.SectorsPerCluster == 0 ? 0
+    : (hiddenVolumeSectors - dataStartRelative) / HiddenFAT32.SectorsPerCluster;
+local uint64 clusterBytes = (uint64)HiddenFAT32.BytesPerSector * HiddenFAT32.SectorsPerCluster;
+local uint64 rootDirOffset = (dataStartLBA + ((uint64)HiddenFAT32.RootCluster - 2) * HiddenFAT32.SectorsPerCluster)
+    * HiddenFAT32.BytesPerSector;
+
+Printf("Bootice hidden FAT32: bytes/sector=%u, sectors/cluster=%u, reserved=%u, FATs=%u, FAT size=%u sectors\n",
+    HiddenFAT32.BytesPerSector, HiddenFAT32.SectorsPerCluster, HiddenFAT32.ReservedSectors,
+    HiddenFAT32.FatCount, fatSizeSectors);
+Printf("FAT start LBA=%Lu, data start LBA=%Lu, root cluster=%u, cluster count=%Lu\n",
+    fatStartLBA, dataStartLBA, HiddenFAT32.RootCluster, clusterCount);
+
+if (HiddenFAT32.BytesPerSector != 512 && HiddenFAT32.BytesPerSector != 1024
+    && HiddenFAT32.BytesPerSector != 2048 && HiddenFAT32.BytesPerSector != 4096)
+{
+    Warning("Unsupported FAT32 bytes-per-sector value.");
+}
+
+if (clusterBytes > 0 && HiddenFAT32.RootCluster >= 2)
+{
+    local uint rootEntryCount = (uint)(clusterBytes / 32);
+    FSeek(rootDirOffset);
+    FAT_DirectoryEntry RootDirectoryEntries[rootEntryCount] <optimize=false>;
+}

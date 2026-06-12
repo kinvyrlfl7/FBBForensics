@@ -116,6 +116,26 @@ struct FbinstCarveRange
     QString signatureHint;
 };
 
+quint64 parseFormattedInteger(const QVariant &value)
+{
+    bool ok = false;
+    const quint64 numeric = value.toULongLong(&ok);
+    if (ok) {
+        return numeric;
+    }
+
+    QString text = value.toString().trimmed();
+    const int parenIndex = text.indexOf(QLatin1Char('('));
+    if (parenIndex > 0) {
+        text = text.left(parenIndex).trimmed();
+    }
+    if (text.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
+        text = text.mid(2);
+        return text.toULongLong(&ok, 16);
+    }
+    return text.toULongLong(&ok, 10);
+}
+
 QString rangeName(const FbinstCarveRange &range)
 {
     const QString suffix = range.signatureHint.isEmpty() ? QStringLiteral("range") : range.signatureHint;
@@ -210,8 +230,11 @@ QString uniqueOutputPath(const QString &directory, const QString &fileName)
 bool extractFbinstRecordToFile(const QSqlRecord &record, ImageReader &reader, const QString &outputPath, QString *errorMessage)
 {
     const QString areaType = record.value(QStringLiteral("Type_Of_DataArea")).toString();
-    const quint64 fileStart = record.value(QStringLiteral("File_Start")).toULongLong();
-    const quint64 fileSize = record.value(QStringLiteral("File_Size")).toULongLong();
+    const QString startColumn = record.indexOf(QStringLiteral("File_Start_Sector")) >= 0
+        ? QStringLiteral("File_Start_Sector")
+        : QStringLiteral("File_Start");
+    const quint64 fileStart = parseFormattedInteger(record.value(startColumn));
+    const quint64 fileSize = parseFormattedInteger(record.value(QStringLiteral("File_Size")));
     const quint64 physicalStartSector = fileStart;
 
     QFile output(outputPath);
@@ -682,6 +705,17 @@ void ShowcaseApp::showTable(const QString &dbKey, const QString &tableName, cons
     if (dbKey == QStringLiteral("partition") && tableName == QStringLiteral("Partitions")) {
         m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Partition_Size")), Qt::Horizontal, QStringLiteral("Partition Size (Bytes)"));
         m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Partition_Size_MB_GB")), Qt::Horizontal, QStringLiteral("Partition Size (MB / GB)"));
+    } else if (dbKey == QStringLiteral("fbinst") && tableName == QStringLiteral("Fbinst_List")) {
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("File_Start_Sector")), Qt::Horizontal, QStringLiteral("File Start Sector"));
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("File_Start_Offset")), Qt::Horizontal, QStringLiteral("File Start Offset"));
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("File_Size")), Qt::Horizontal, QStringLiteral("File Size"));
+    } else if (dbKey == QStringLiteral("bootice") && tableName == QStringLiteral("Bootice")) {
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Start_LBA_Address")), Qt::Horizontal, QStringLiteral("Start LBA"));
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Start_LBA_Offset")), Qt::Horizontal, QStringLiteral("Start LBA Offset"));
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Total_Sector_Count")), Qt::Horizontal, QStringLiteral("Total Sectors"));
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Partition_Size")), Qt::Horizontal, QStringLiteral("Partition Size"));
+    } else if (dbKey == QStringLiteral("bootice") && tableName == QStringLiteral("Bootice_List")) {
+        m_tableModel->setHeaderData(m_tableModel->fieldIndex(QStringLiteral("Size")), Qt::Horizontal, QStringLiteral("Size"));
     }
     m_tableModel->select();
     m_resultTable->resizeColumnsToContents();
@@ -730,7 +764,7 @@ bool ShowcaseApp::canExtractCurrentFbinstRecord() const
     for (const QModelIndex &row : rows) {
         const QSqlRecord record = m_tableModel->record(row.row());
         if (!record.value(QStringLiteral("File_Names")).toString().trimmed().isEmpty()
-            && record.value(QStringLiteral("File_Size")).toULongLong() > 0) {
+            && parseFormattedInteger(record.value(QStringLiteral("File_Size"))) > 0) {
             return true;
         }
     }
@@ -832,7 +866,7 @@ void ShowcaseApp::extractSelectedBooticeFile()
         QMessageBox::critical(this, QStringLiteral("Extraction failed"), QStringLiteral("Bootice partition metadata is missing."));
         return;
     }
-    const quint64 startLba = query.value(0).toULongLong();
+    const quint64 startLba = parseFormattedInteger(query.value(0));
 
     const QString defaultPath = QDir(m_outputDirEdit->text().trimmed()).filePath(entryName);
     const QString outputPath = QFileDialog::getSaveFileName(this, QStringLiteral("Save extracted file"), defaultPath, QStringLiteral("All Files (*.*)"));
@@ -973,7 +1007,7 @@ void ShowcaseApp::extractSelectedFbinstFile()
     for (const QModelIndex &row : rows) {
         const QSqlRecord record = m_tableModel->record(row.row());
         if (record.value(QStringLiteral("File_Names")).toString().trimmed().isEmpty()
-            || record.value(QStringLiteral("File_Size")).toULongLong() == 0) {
+            || parseFormattedInteger(record.value(QStringLiteral("File_Size"))) == 0) {
             continue;
         }
         records.append(record);
@@ -1048,7 +1082,7 @@ void ShowcaseApp::extractSelectedFbinstFile()
 
         if (extractFbinstRecordToFile(record, *reader, outputPath, &errorMessage)) {
             ++successCount;
-            const quint64 fileSize = record.value(QStringLiteral("File_Size")).toULongLong();
+            const quint64 fileSize = parseFormattedInteger(record.value(QStringLiteral("File_Size")));
             bytesRead += fileSize;
             bytesWritten += quint64(QFileInfo(outputPath).size());
             appendLog(QStringLiteral("Extracted Fbinst file: %1 -> %2").arg(entryName, QFileInfo(outputPath).absoluteFilePath()));
